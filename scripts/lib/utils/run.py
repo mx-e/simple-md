@@ -1,16 +1,18 @@
 from collections.abc import Callable
 from functools import partial
+import socket, sys
 
 from hydra_zen import MISSING, instantiate, store, zen
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
+import torch as th
 import wandb
 
 from lib.utils.helpers import get_hydra_output_dir, seed_everything
 from lib.utils.wandb import WandBRun
 
 
-def pre_call(root_config: DictConfig, log_debug: bool = False) -> None:
+def pre_call(root_config: DictConfig) -> None:
     """Logs the config, sets the seed and initializes a WandB run before config instantiation.
 
     Args:
@@ -23,12 +25,20 @@ def pre_call(root_config: DictConfig, log_debug: bool = False) -> None:
     ), "Config must contain 'conf' at root-level."
     config: DictConfig = root_config["cfg"]
     assert (
-        "seed" in config and "job" in config and "wandb" in config
+        "seed" in config
+        and "job" in config
+        and "wandb" in config
+        and "runtime" in config
+        and "loglevel" in config
     ), "Do not edit the BaseConfig schema without updating the pre_call function."
     seed = config.get("seed", MISSING)
     job = config.get("job", MISSING)
     if job is not MISSING:
         return
+
+    if (loglevel := config.get("loglevel")) is not None:
+        logger.remove()
+        logger.add(sys.stderr, level=loglevel.upper())
 
     if seed is not MISSING:
         seed_everything(seed)
@@ -45,7 +55,7 @@ def pre_call(root_config: DictConfig, log_debug: bool = False) -> None:
         wandb.save(output_path / ".hydra/*", base_path=output_path, policy="now")
 
 
-def run(main_function: Callable, log_debug=True) -> None:
+def run(main_function: Callable) -> None:
     """Configure and run a given function using hydra-zen.
 
     Args:
@@ -55,7 +65,7 @@ def run(main_function: Callable, log_debug=True) -> None:
     store.add_to_hydra_store()
     zen(
         main_function,
-        pre_call=partial(pre_call, log_debug=log_debug),
+        pre_call=pre_call,
         resolve_pre_call=False,
     ).hydra_main(
         config_name="root",

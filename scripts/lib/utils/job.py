@@ -21,7 +21,7 @@ class SlurmConfig:
     cpus_per_task: int | None = None
     gpus_per_task: int | None = None
     memory_gb: int | None = None
-    excluded_nodes: list[str] = field(default_factory=list)
+    exclude: str | None = None
     constraint: str | None = None
     time_hours: int | None = None
     nodes: int | None = None
@@ -40,8 +40,8 @@ class SlurmConfig:
         if self.memory_gb:
             params["mem_gb"] = self.memory_gb
 
-        if self.excluded_nodes:
-            params["exclude"] = ",".join(self.excluded_nodes)
+        if self.exclude:
+            params["exclude"] = self.exclude
 
         if self.constraint:
             params["constraint"] = self.constraint

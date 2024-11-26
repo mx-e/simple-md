@@ -164,4 +164,6 @@ out
 data
 wandb
 
+outputs
+
 **/*.sif
