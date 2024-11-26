@@ -13,11 +13,11 @@ from torch import nn
 
 from conf.base_conf import configure_main, BaseConfig
 from lib.utils.run import run
-from lib.utils.dist import setup_dist, setup_device
+from lib.utils.dist import setup_dist, setup_device, cleanup_dist
 from lib.ema import EMAModel
 from lib.lr_scheduler import get_lr_scheduler
 from lib.loss import LossModule, LossType
-from lib.types import Property as Props, LoadedDataset
+from lib.types import Property as Props, DatasetSplits
 from lib.models import PairEncoder
 from lib.datasets import get_qcml_dataset
 
@@ -41,8 +41,8 @@ p_cosine_scheduler = pbuilds(
 )
 loss_module = builds(
     LossModule,
-    targets=[Props.forces],
-    loss_types={Props.forces: LossType.mae},
+    targets=["forces"],
+    loss_types={"forces": "mae"},
 )
 pair_encoder_model = builds(
     PairEncoder,
@@ -59,15 +59,14 @@ pair_encoder_model = builds(
     norm_first=True,
     norm="layer",
     decomposer_type="pooling",
-    target_heads=[Props.forces],
+    target_heads=["forces"],
     head_project_down=True,
 )
-qcml_data = builds(
+qcml_data = pbuilds(
     get_qcml_dataset,
     data_dir="/home/maxi/MOLECULAR_ML/5_refactored_repo/data_ar",
     dataset_name="qcml_unified_fixed_split_by_smiles",
     dataset_version="1.0.0",
-    splits={"train": "train", "valid": "valid", "test": "test"},
     copy_to_temp=True,
 )
 
@@ -78,7 +77,7 @@ def train(
     world_size: int,
     cfg: BaseConfig,
     model: nn.Module = pair_encoder_model,
-    data: LoadedDataset = qcml_data,
+    data: DatasetSplits = qcml_data,
     loss: LossModule = loss_module,
     lr_scheduler: Partial[callable] | None = p_cosine_scheduler,
     ema: Partial[EMAModel] | None = p_ema,
@@ -92,7 +91,11 @@ def train(
     clip_grad: float = 1.0,
 ):
     setup_dist(rank, world_size, port=port)
-    ctx, device = setup_device(rank)
+    try:
+        ctx, device = setup_device(rank)
+        logger.info(f"Running on rank {rank} with device {device}")
+    finally:
+        cleanup_dist()
 
 
 p_train_func = pbuilds_full(train)

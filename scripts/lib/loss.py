@@ -1,8 +1,8 @@
 import torch as th
 import torch.nn.functional as F
 from torch import nn
-from lib.consts import Property as Props
-from typing import Literal
+from lib.types import Property as Props
+from enum import Enum
 
 
 def atom_weighted_forces_mae(pred_forces, true_forces, mask, reduction="mean"):
@@ -46,12 +46,26 @@ def atom_weighted_forces_huber(
     return losses.mean()
 
 
-class LossType(Literal):
+class LossType(Enum):
     force_weighted = "force_weighted"
     mae = "mae"
     mse = "mse"
     huber = "huber"
     rve = "rve"
+
+    def __str__(self):
+        return self.value
+
+    def __repr__(self):
+        return self.value
+
+    @classmethod
+    def _missing_(cls, value):
+        # This allows Property["energy"] to work the same as Property.energy
+        for member in cls:
+            if member.value == value:
+                return member
+        raise ValueError(f"'{value}' is not a valid {cls.__name__}")
 
 
 force_loss_funcs = {
@@ -76,7 +90,7 @@ loss_funcs = {
     Props.forces: force_loss_funcs,
     Props.formation_energy: energy_loss_funcs,
     Props.energy: energy_loss_funcs,
-    Props.dipole_moment: dipole_loss_funcs,
+    Props.dipole: dipole_loss_funcs,
 }
 
 atomref_val_targets = {
@@ -88,25 +102,27 @@ atomref_val_targets = {
 class LossModule(nn.Module):
     def __init__(
         self,
-        targets: list[Props],
-        loss_types: dict[Props, LossType],
-        weights: dict[Props, float] | None = None,
+        targets: list[str],
+        loss_types: dict[str, str],
+        weights: dict[str, float] | None = None,
         losses_per_mol: bool = False,
     ):
         super().__init__()
-        self.targets = targets
-        self.weights = weights
-        self.loss_types = loss_types
+        self.targets = [Props[t] for t in targets]
+        self.weights = (
+            {Props[t]: w for t, w in weights.items()}
+            if weights
+            else {t: 1.0 for t in self.targets}
+        )
+        self.loss_types = {Props[t]: LossType[lt] for t, lt in loss_types.items()}
         self.losses_per_mol = losses_per_mol
-        if self.weights is None:
-            self.weights = {t: 1.0 for t in targets}
         assert (
-            len(targets) == len(weights) == len(loss_types)
+            len(self.targets) == len(self.weights) == len(self.loss_types)
         ), "For each target, a loss weight and a loss type must be configured"
 
         try:
-            self.loss_funcs = {k: loss_funcs[k][v] for k, v in loss_types.items()}
-            self.loss_funcs_val = {k: loss_funcs[k][LossType.mae] for k in targets}
+            self.loss_funcs = {k: loss_funcs[k][v] for k, v in self.loss_types.items()}
+            self.loss_funcs_val = {k: loss_funcs[k][LossType.mae] for k in self.targets}
         except KeyError as e:
             raise ValueError(f"Loss function not defined for one or more targets: {e}")
 

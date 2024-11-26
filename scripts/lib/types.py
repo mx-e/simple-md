@@ -31,6 +31,7 @@ class Property(Enum):
     mask = "mask"
     forces = "forces"
     positions = "positions"
+    dipole = "dipole"
     mol_idx = "mol_idx"
     i_idx = "i_idx"
     j_idx = "j_idx"
@@ -60,6 +61,7 @@ property_dims = frozendict(
         Property.forces: 3,
         Property.positions: 3,
         Property.mol_idx: 1,
+        Property.dipole: 3,
         Property.i_idx: 1,
         Property.j_idx: 1,
         Property.energy_atomref: 1,
@@ -81,6 +83,7 @@ property_dtype = frozendict(
         Property.forces: th.float32,
         Property.positions: th.float32,
         Property.mol_idx: th.int64,
+        Property.dipole: th.float32,
         Property.i_idx: th.int64,
         Property.j_idx: th.int64,
         Property.energy_atomref: th.float32,
@@ -102,6 +105,7 @@ property_type = frozendict(
         Property.forces: PropertyType.atom_wise,
         Property.positions: PropertyType.atom_wise,
         Property.mol_idx: PropertyType.edge_wise,
+        Property.dipole: PropertyType.mol_wise,
         Property.i_idx: PropertyType.edge_wise,
         Property.j_idx: PropertyType.edge_wise,
         Property.energy_atomref: PropertyType.mol_wise,
@@ -129,7 +133,7 @@ DatasetStats = dict[Property, FeatureStats]
 
 
 @dataclass
-class LoadedDataset:
-    datasets: dict[str, Dataset]
-    dataset_props: frozendict[str, Property]
+class DatasetSplits:
+    splits: dict[str, Dataset]
+    dataset_props: list[Property]
     dataset_stats: DatasetStats | None

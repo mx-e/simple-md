@@ -4,7 +4,8 @@ import torch.distributed as dist
 from loguru import logger
 from frozendict import frozendict
 from pathlib import Path
-from lib.types import Property as Props, LoadedDataset
+from lib.types import Property as Props, DatasetSplits
+from lib.utils.dataset import TorchifyDataset
 
 qcml_props = frozendict(
     {
@@ -20,18 +21,18 @@ qcml_props = frozendict(
 
 
 def get_qcml_dataset(
-    ds_dir,
-    ds_name,
     rank,
-    splits,
-    ds_version="1.0.0",
+    data_dir,
+    dataset_name,
+    splits={"train": "train", "valid": "valid", "test": "test"},
+    dataset_version="1.0.0",
     copy_to_temp=False,
 ):
 
-    data_path = os.path.join(ds_dir, ds_name, ds_version)
+    data_path = os.path.join(data_dir, dataset_name, dataset_version)
 
     if copy_to_temp:
-        data_path_temp = Path("/temp_data") / ds_name / ds_version
+        data_path_temp = Path("/temp_data") / dataset_name / dataset_version
 
         if rank == 0:
             import shutil
@@ -55,7 +56,10 @@ def get_qcml_dataset(
     datasets = {
         k: builder.as_data_source(split=v, decoders=decoders) for k, v in splits.items()
     }
-    return LoadedDataset(
-        datasets=datasets,
-        dataset_props=qcml_props,
+
+    datasets = {k: TorchifyDataset(v, qcml_props) for k, v in datasets.items()}
+
+    return DatasetSplits(
+        splits=datasets,
+        dataset_props=list(qcml_props.values()),
     )

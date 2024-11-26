@@ -19,7 +19,8 @@ def setup_dist(rank, world_size, port="33281"):
     os.environ["MASTER_PORT"] = str(port)
     # initialize the process group
     dist_type = "nccl" if th.cuda.is_available() else "gloo"
-    th.cuda.set_device(rank)
+    if th.cuda.is_available():
+        th.cuda.set_device(rank)
     dist.init_process_group(
         dist_type,
         rank=rank,
@@ -46,7 +47,7 @@ def setup_device(rank=0):
         if th.cuda.is_available() and th.cuda.is_bf16_supported()
         else "float16"
     )
-    dtype = "float32"  # TODO: remove
+    dtype = "float32"  # TODO: make configurable
     logger.info(f"Data type: {dtype}")
 
     ptdtype = {

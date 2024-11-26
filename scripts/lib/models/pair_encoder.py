@@ -2,7 +2,7 @@ import math
 import torch as th
 from torch import nn
 from torch.nn import functional as F
-from lib.consts import Property as Props, property_type, PropertyType
+from lib.types import Property as Props, property_type, PropertyType
 
 NODE_FEATURES_OFFSET = 128
 
@@ -23,9 +23,8 @@ class PairEncoder(nn.Module):
         norm_first: bool,
         norm: str,
         decomposer_type: str,
-        target_heads: list[Props],
+        target_heads: list[str],
         head_project_down: bool,
-        **_,
     ):
         super().__init__()
         self.embedding = PairEmbedding(embd_dim, num_3d_kernels, cls_token)
@@ -50,9 +49,10 @@ class PairEncoder(nn.Module):
                 for _ in range(n_layers)
             ]
         )
+        target_heads = [Props[t] for t in target_heads]
         self.heads = nn.ModuleDict(
             {
-                target: NodeLevelRegressionHead(
+                str(target): NodeLevelRegressionHead(
                     target,
                     embd_dim=embd_dim,
                     cls_token=cls_token,
@@ -86,7 +86,7 @@ class PairEncoder(nn.Module):
             x = layer(x, mask)
 
         h = self.decomposer(x)
-        out = {k: head(h, inputs) for k, head in self.heads.items()}
+        out = {Props[k]: head(h, inputs) for k, head in self.heads.items()}
         out["embd"] = h
         return out
 
@@ -452,7 +452,7 @@ class NodeLevelRegressionHead(nn.Module):
             nn.Dropout(head_dropout),
             nn.Linear(embd_dim // 4 if project_down else embd_dim, 3, bias=False),
         )
-        self.target_type = property_type(target)
+        self.target_type: PropertyType = property_type[target]
 
     def reset_parameters(self):
         self.apply(self._init_weights)
