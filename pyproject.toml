@@ -1,0 +1,37 @@
+[project]
+name = "ml-project-template"
+version = "0.0.1"
+description = "ML Project Template"
+requires-python = "==3.12"
+readme = {file = "README.md", content-type = "text/markdown"}
+
+[tool.mypy]
+explicit_package_bases = true
+disable_error_code = ["import-untyped"]
+
+[[tool.mypy.overrides]]
+module = "cloudpathlib.*"
+ignore_errors = true
+follow_imports = "skip"
+
+[tool.poetry]
+name = "example-ml-project"
+version = "0.1.0"
+description = ""
+authors = ["mx-e <mail@mx-e.net>"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.11"
+torch = "^2.4.0"
+loguru = "^0.7.2"
+wandb = "^0.17.5"
+hydra-zen = "^0.13.0"
+python-dotenv = "^1.0.1"
+numpy = "^2.1.3"
+submitit = "^1.5.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
