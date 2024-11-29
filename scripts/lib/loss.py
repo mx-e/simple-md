@@ -94,8 +94,8 @@ loss_funcs = {
 }
 
 atomref_val_targets = {
-    Props.formation_energy_atomref: Props.formation_energy,
-    Props.energy_atomref: Props.energy,
+    Props.formation_energy: Props.formation_energy_atomref,
+    Props.energy: Props.energy_atomref,
 }
 
 
@@ -133,9 +133,9 @@ class LossModule(nn.Module):
             ), "Force weighted loss not implemented for flat batches"
             mask = th.ones(
                 1,
-                predictions["forces"].shape[0],
+                predictions[Props.forces].shape[0],
                 1,
-                device=predictions["forces"].device,
+                device=predictions[Props.forces].device,
             )
             if Props.forces in predictions:
                 predictions[Props.forces].unsqueeze_(0)
@@ -144,30 +144,24 @@ class LossModule(nn.Module):
             mask = inputs[Props.mask].unsqueeze(-1)
 
         losses = {}
-        for prediction, pred_value in predictions.items():
-            target = prediction
-            input_target = prediction
-            # Handle atomref targets
-            if prediction in atomref_val_targets:
-                target = (
-                    prediction if self.training else atomref_val_targets[prediction]
-                )
-                input_target = atomref_val_targets[prediction]
-            else:
-                assert (
-                    prediction in self.targets
-                ), f"Invalid prediction target {prediction}"
-
+        for loss_prop in self.targets:
             loss_func = (
-                self.loss_funcs[target]
+                self.loss_funcs[loss_prop]
                 if self.training
-                else self.loss_funcs_val[target]
+                else self.loss_funcs_val[loss_prop]
             )
             reduction = "none" if self.losses_per_mol and not self.training else "mean"
-            losses[target] = loss_func(
-                pred_value, inputs[input_target], mask, reduction=reduction
+            # handle atomref targets
+            loss_dict_prop = loss_prop
+            if loss_prop in atomref_val_targets and not self.training:
+                loss_prop = atomref_val_targets[loss_prop]
+
+            losses[loss_dict_prop] = loss_func(
+                predictions[loss_prop], inputs[loss_prop], mask, reduction=reduction
             )
+
         if self.losses_per_mol:
             return losses
-        losses["total"] = sum(self.get_weighted_losses(losses))
+        weighted_losses = {k: v * self.weights[k] for k, v in losses.items()}
+        losses["total"] = sum(weighted_losses.values())
         return losses

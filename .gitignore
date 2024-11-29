@@ -165,5 +165,6 @@ data
 wandb
 
 outputs
+data_ar
 
 **/*.sif

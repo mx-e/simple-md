@@ -1,1 +1,1 @@
-from .pair_encoder import PairEncoder
+from .pair_encoder import PairEncoder, get_pair_encoder_pipeline_config

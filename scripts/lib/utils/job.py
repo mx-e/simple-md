@@ -14,10 +14,25 @@ from lib.utils.wandb import WandBConfig
 from lib.utils.helpers import get_hydra_output_dir
 
 
+partition_name_to_time_limit_hrs = {
+    "cpu-2h": 2,
+    "cpu-5h": 5,
+    "cpu-2d": 48,
+    "cpu-7d": 168,
+    "gpu-2h": 2,
+    "gpu-5h": 5,
+    "gpu-2d": 48,
+    "gpu-7d": 168,
+}
+
+MINS_IN_H = 60
+
+
 @dataclass
 class SlurmConfig:
     """SLURM resource configuration."""
 
+    partition: str = "gpu-2h"
     cpus_per_task: int | None = None
     gpus_per_task: int | None = None
     memory_gb: int | None = None
@@ -30,21 +45,26 @@ class SlurmConfig:
     def to_submitit_params(self) -> dict:
         """Convert to submitit parameters."""
         params = {}
+        if self.partition:
+            params["slurm_partition"] = self.partition
+            params["timeout_min"] = (
+                partition_name_to_time_limit_hrs[self.partition] * MINS_IN_H
+            )
 
         if self.cpus_per_task:
             params["cpus_per_task"] = self.cpus_per_task
 
         if self.gpus_per_task:
-            params["gpus_per_task"] = self.gpus_per_task
+            params["slurm_gpus_per_task"] = self.gpus_per_task
 
         if self.memory_gb:
             params["mem_gb"] = self.memory_gb
 
         if self.exclude:
-            params["exclude"] = self.exclude
+            params["slurm_exclude"] = self.exclude
 
         if self.constraint:
-            params["constraint"] = self.constraint
+            params["slurm_constraint"] = self.constraint
 
         if self.time_hours:
             params["time"] = f"{self.time_hours}:00:00"
@@ -86,7 +106,7 @@ class Job:
     @property
     def python_command(self) -> str:
         """Python command used by the job."""
-        return f"apptainer exec {self.image} python"
+        return f"apptainer exec --nv --bind /temp:/temp_data {self.image} python"
 
     def run(self) -> None:
         """Run the job on the cluster."""
@@ -103,10 +123,8 @@ class Job:
             cluster=self.cluster,
             slurm_python=self.python_command,
         )
-
         # Combine base kwargs with SLURM config
         all_params = {
-            "slurm_partition": self.partition,
             **self.slurm_config.to_submitit_params(),
             **self.kwargs,
         }

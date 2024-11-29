@@ -1,10 +1,69 @@
 import math
+from functools import partial
+
 import torch as th
 from torch import nn
 from torch.nn import functional as F
-from lib.types import Property as Props, property_type, PropertyType
+
+from lib.types import Property as Props, property_type, PropertyType, PipelineConfig
+from lib.data.transforms import (
+    center_positions_on_centroid,
+    augment_positions,
+    dynamic_batch_size,
+)
 
 NODE_FEATURES_OFFSET = 128
+
+
+def get_pair_encoder_pipeline_config(
+    augmentation_mult: int,
+    random_rotation: bool,
+    random_reflection: bool,
+    center_positions: bool,
+    dynamic_batch_size_cutoff: int | None = None,
+    include_energy: bool = False,
+    include_dipole: bool = False,
+) -> PipelineConfig:
+    augment = [
+        (
+            partial(
+                augment_positions,
+                augmentation_mult=augmentation_mult,
+                random_reflection=random_reflection,
+                random_rotation=random_rotation,
+            )
+            if augmentation_mult > 1
+            else None
+        )
+    ]
+    dyn_batch = [
+        (
+            partial(dynamic_batch_size, cutoff=dynamic_batch_size_cutoff)
+            if dynamic_batch_size_cutoff
+            else None
+        )
+    ]
+    needed_props = [
+        Props.positions,
+        Props.atomic_numbers,
+        Props.multiplicity,
+        Props.charge,
+        Props.forces,
+    ]
+    if include_energy:
+        needed_props += [Props.energy]
+    if include_dipole:
+        needed_props += [Props.dipole]
+    return PipelineConfig(
+        pre_collate_processors=(
+            [center_positions_on_centroid] if center_positions else []
+        ),
+        post_collate_processors=augment + dyn_batch,
+        post_collate_processors_val=[],
+        collate_type="tall",
+        batch_size_impact=float(augmentation_mult),
+        needed_props=needed_props,
+    )
 
 
 class PairEncoder(nn.Module):
@@ -77,13 +136,13 @@ class PairEncoder(nn.Module):
 
     def forward(self, inputs):
         h, e, mask = self.embedding(inputs)
-        x = self.composer(h, e, mask)
+        x = self.composer((h, e, mask))
 
         unbatch = mask.unsqueeze(2) * mask.unsqueeze(1)  # B x N x N
-        mask = unbatch.unsqueeze(3) * mask.unsqueeze(1).unsqueeze(2)  # B x N x N x N
+        x_mask = unbatch.unsqueeze(3) * mask.unsqueeze(1).unsqueeze(2)  # B x N x N x N
 
         for layer in self.layers:
-            x = layer(x, mask)
+            x = layer(x, x_mask)
 
         h = self.decomposer(x)
         out = {Props[k]: head(h, inputs) for k, head in self.heads.items()}
@@ -453,6 +512,10 @@ class NodeLevelRegressionHead(nn.Module):
             nn.Linear(embd_dim // 4 if project_down else embd_dim, 3, bias=False),
         )
         self.target_type: PropertyType = property_type[target]
+        assert self.target_type in [
+            PropertyType.mol_wise,
+            PropertyType.atom_wise,
+        ], f"Invalid target type {self.target_type}"
 
     def reset_parameters(self):
         self.apply(self._init_weights)
@@ -465,16 +528,19 @@ class NodeLevelRegressionHead(nn.Module):
 
     def forward(self, h, inputs):
         mask = inputs[Props.mask]
-        h = self.final_ln_node(h)
+        h = h.clone()  # (b,n,e)
+        h = self.final_ln_node(h)  # (b,n,e)
         mask = mask.float().unsqueeze(-1)
 
-        if self.cls_token:
-            if self.target_type == PropertyType.mol_wise:
-                h = h[:, 0, :]
-            elif self.target_type == PropertyType.atom_wise:
+        if self.target_type == PropertyType.mol_wise:
+            h = (
+                h[:, 0, :]
+                if self.cls_token
+                else (h * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-9)
+            )
+        elif self.target_type == PropertyType.atom_wise:
+            if self.cls_token:
                 h = h[:, 1:, :]
-        else:
-            h = (h * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-9)
 
         h = h * mask
         return self.mlp(h)

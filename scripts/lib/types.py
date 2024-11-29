@@ -1,5 +1,6 @@
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Literal, Callable
 
 from frozendict import frozendict
 import torch as th
@@ -132,8 +133,47 @@ class FeatureStats:
 DatasetStats = dict[Property, FeatureStats]
 
 
+class Split(Enum):
+    train = "train"
+    val = "val"
+    test = "test"
+
+    def __str__(self):
+        return self.value
+
+    def __repr__(self):
+        return self.value
+
+    @classmethod
+    def _missing_(cls, value):
+        # This allows Property["energy"] to work the same as Property.energy
+        for member in cls:
+            if member.value == value:
+                return member
+        raise ValueError(f"'{value}' is not a valid {cls.__name__}")
+
+
 @dataclass
 class DatasetSplits:
-    splits: dict[str, Dataset]
-    dataset_props: list[Property]
-    dataset_stats: DatasetStats | None
+    splits: dict[Split, Dataset]
+    dataset_props: dict[Property, str]
+    dataset_stats: DatasetStats | None = None
+
+
+@dataclass
+class PipelineConfig:
+    pre_collate_processors: list[Callable[[list[dict]], list[dict]]] = field(
+        default_factory=list
+    )
+    pre_collate_processors_val: list[Callable[[list[dict]], list[dict]]] | None = None
+    post_collate_processors: list[Callable[dict, dict]] = field(default_factory=list)
+    post_collate_processors_val: list[Callable[dict, dict]] | None = None
+    collate_type: Literal["tall", "flat"] = "tall"
+    batch_size_impact: float = 1.0
+    needed_props: list[Property] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.pre_collate_processors_val is None:
+            self.pre_collate_processors_val = self.pre_collate_processors
+        if self.post_collate_processors_val is None:
+            self.post_collate_processors_val = self.post_collate_processors

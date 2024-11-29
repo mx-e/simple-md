@@ -1,5 +1,5 @@
 Bootstrap: docker
-From: python:3.12-slim
+From: mx8e/cluster_python:3.12
 
 %setup
     mkdir -p ${APPTAINER_ROOTFS}/opt/slurm-23.2
@@ -8,6 +8,7 @@ From: python:3.12-slim
     mkdir -p ${APPTAINER_ROOTFS}/etc/munge
     mkdir -p ${APPTAINER_ROOTFS}/var/log/munge
     mkdir -p ${APPTAINER_ROOTFS}/run/munge
+    mkdir -p ${APPTAINER_ROOTFS}/temp_data
 
 %files
     pyproject.toml /pyproject.toml
@@ -19,11 +20,4 @@ From: python:3.12-slim
     export PYTHONPATH=./src:$PYTHONPATH
 
 %post
-    # Create groups and users for SLURM
-    groupadd -g 12067 slurm || true
-    useradd -m -d /tmp -u 13504 -g slurm -s /bin/false slurm || true
-    groupadd -g 119 munge || true
-    useradd -m -d /nonexistent -u 114 -g munge -s /usr/sbin/nologin munge || true
-    
-    pip install --root-user-action=ignore --no-cache-dir poetry
     poetry config virtualenvs.create false && poetry install --no-interaction --no-root

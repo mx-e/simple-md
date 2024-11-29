@@ -4,18 +4,17 @@ import torch.distributed as dist
 from loguru import logger
 from frozendict import frozendict
 from pathlib import Path
-from lib.types import Property as Props, DatasetSplits
-from lib.utils.dataset import TorchifyDataset
+from lib.types import Property as Props, DatasetSplits, Split
 
 qcml_props = frozendict(
     {
-        "pbe0_energy": Props.energy,
-        "pbe0_formation_energy": Props.formation_energy,
-        "charge": Props.charge,
-        "multiplicity": Props.multiplicity,
-        "atomic_numbers": Props.atomic_numbers,
-        "pbe0_forces": Props.forces,
-        "positions": Props.positions,
+        Props.energy: "pbe0_energy",
+        Props.formation_energy: "pbe0_formation_energy",
+        Props.charge: "charge",
+        Props.multiplicity: "multiplicity",
+        Props.atomic_numbers: "atomic_numbers",
+        Props.forces: "pbe0_forces",
+        Props.positions: "positions",
     }
 )
 
@@ -24,12 +23,13 @@ def get_qcml_dataset(
     rank,
     data_dir,
     dataset_name,
-    splits={"train": "train", "valid": "valid", "test": "test"},
+    splits={"train": "train", "val": "val", "test": "test"},
     dataset_version="1.0.0",
     copy_to_temp=False,
 ):
 
     data_path = os.path.join(data_dir, dataset_name, dataset_version)
+    splits = {Split[k]: v for k, v in splits.items()}
 
     if copy_to_temp:
         data_path_temp = Path("/temp_data") / dataset_name / dataset_version
@@ -57,9 +57,7 @@ def get_qcml_dataset(
         k: builder.as_data_source(split=v, decoders=decoders) for k, v in splits.items()
     }
 
-    datasets = {k: TorchifyDataset(v, qcml_props) for k, v in datasets.items()}
-
     return DatasetSplits(
         splits=datasets,
-        dataset_props=list(qcml_props.values()),
+        dataset_props=qcml_props,
     )
