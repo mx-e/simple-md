@@ -1,13 +1,10 @@
 import os
 import numpy as np
-import tensorflow_datasets as tfds
-import torch.distributed as dist
-from loguru import logger
 from frozendict import frozendict
-from pathlib import Path
 from scripts.lib.types import Property as Props, DatasetSplits, Split
-from copy import deepcopy
 
+import numpy as np
+from torch.utils.data import Dataset, Subset
 from sklearn.model_selection import train_test_split
 
 md17_22_props = frozendict(
@@ -19,17 +16,11 @@ md17_22_props = frozendict(
     }
 )
 
-import numpy as np
-from torch.utils.data import Dataset, Subset
-from sklearn.model_selection import train_test_split
-
-
 class NPZDataset(Dataset):
     def __init__(self, file_list):
         """
         Args:
             file_list (list of str): List of paths to .npz files.
-            transform (callable, optional): Optional transform to apply to data.
         """
         self.file_list = file_list
         
@@ -66,7 +57,6 @@ class NPZDataset(Dataset):
             "R": self.file_data[file_idx]["R"][row_idx],
             "z": self.file_data[file_idx]["z"],
         }
-        
         return sample
 
 
@@ -79,11 +69,11 @@ def get_md17_22_dataset(
     seed=42,
     **kwargs,
 ):
-
     data_path = os.path.join(data_dir, dataset_name)
     file_list = [os.path.join(data_path, f) for f in os.listdir(data_path) if f.endswith('.npz')]
     dataset = NPZDataset(file_list)
-    print(f"Dataset length: {len(dataset)}")
+
+    # Split the dataset with a stratified split
     index_array = np.arange(len(dataset))
     train_val, test = train_test_split(
         index_array,
