@@ -34,6 +34,10 @@ submitit = "^1.5.2"
 frozendict = "^2.4.6"
 tensorflow-datasets = "^4.9.7"
 ase = "^3.23.0"
+scikit-learn = "^1.5.2"
+
+[tool.poetry.group.datasets.dependencies]
+sgdml = "^1.0.2"
 
 [build-system]
 requires = ["poetry-core"]
