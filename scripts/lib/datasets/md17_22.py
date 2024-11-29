@@ -25,14 +25,13 @@ from sklearn.model_selection import train_test_split
 
 
 class NPZDataset(Dataset):
-    def __init__(self, file_list, transform=None):
+    def __init__(self, file_list):
         """
         Args:
             file_list (list of str): List of paths to .npz files.
             transform (callable, optional): Optional transform to apply to data.
         """
         self.file_list = file_list
-        self.transform = transform
         
         self.file_data = []  # Stores data loaded from each file
         self.file_indices = []    # Maps dataset indices to (file_idx, row_idx)
