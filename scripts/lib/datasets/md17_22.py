@@ -109,8 +109,3 @@ def get_md17_22_dataset(
         splits=datasets,
         dataset_props=md17_22_props,
     )
-
-splits = get_md17_22_dataset(0, './', 'datasets')
-for i in range(len(splits.splits[Split.train])):
-    print(i)
-    splits.splits[Split.train][i]
