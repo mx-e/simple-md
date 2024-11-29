@@ -4,7 +4,7 @@ from pathlib import Path
 from pprint import pformat
 from itertools import islice
 
-from hydra_zen import builds, store
+from hydra_zen import builds
 from hydra_zen.typing import Partial
 from loguru import logger
 import torch.multiprocessing as mp
@@ -15,17 +15,18 @@ from torch import nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from conf.base_conf import configure_main, BaseConfig
-from lib.utils.run import run
-from lib.utils.dist import setup_dist, setup_device, cleanup_dist
+
+from lib.types import Property as DatasetSplits, PipelineConfig, Split
 from lib.ema import EMAModel
 from lib.lr_scheduler import get_lr_scheduler
 from lib.loss import LossModule
-from lib.types import Property as DatasetSplits, PipelineConfig, Split
 from lib.models import PairEncoder, get_pair_encoder_pipeline_config
 from lib.datasets import get_qcml_dataset
+from lib.data.loaders import get_loaders
 from lib.utils.checkpoint import load_checkpoint, save_checkpoint
 from lib.utils.helpers import get_hydra_output_dir
-from lib.data.loaders import get_loaders
+from lib.utils.run import run
+from lib.utils.dist import setup_dist, setup_device, cleanup_dist
 from lib.utils.log import log_dict
 
 pbuilds = partial(builds, zen_partial=True)
@@ -43,7 +44,7 @@ p_no_scheduler = pbuilds(get_lr_scheduler)
 p_cosine_scheduler = pbuilds(
     get_lr_scheduler,
     scheduler_type="cosine_warmup",
-    warmup_steps=15000,
+    warmup_steps=2000,
     min_lr=1e-7,
 )
 loss_module = builds(
@@ -77,8 +78,6 @@ pair_encoder_data_config = builds(
     center_positions=True,
     dynamic_batch_size_cutoff=29,
 )
-
-
 qcml_data = pbuilds(
     get_qcml_dataset,
     data_dir="/home/maxi/MOLECULAR_ML/5_refactored_repo/data_ar",
@@ -101,11 +100,11 @@ def train(
     ema: Partial[EMAModel] | None = p_ema,
     optimizer: Partial[th.optim.Optimizer] = p_optim,
     batch_size: int = 256,
-    total_steps: int = 880_000,
+    total_steps: int = 200_000,
     lr: float = 5e-4,
     grad_accum_steps: int = 1,
     log_interval: int = 5,
-    eval_interval: int = 100,
+    eval_interval: int = 1000,
     save_interval: int = 50000,
     eval_samples: int = 50000,
     clip_grad: float = 1.0,
@@ -150,7 +149,7 @@ def train(
         start_step = 0
 
         if checkpoint_path != None:
-            start_step = load_checkpoint(model, optimizer, checkpoint_path, ema)
+            start_step = load_checkpoint(model, checkpoint_path, optimizer, ema)
             epoch = start_step // len(loaders[Split.train])
             dist.barrier()
 
@@ -214,7 +213,7 @@ def train(
                             model, loaders[Split.test], ctx, ema, eval_samples
                         )
                         save_checkpoint(
-                            model,
+                            model.module.encoder,
                             optimizer,
                             real_step,
                             Path(save_dir) / "best_model.pth",
@@ -231,7 +230,7 @@ def train(
                 # checkpointing
                 if (real_step + 1) % save_interval == 0 and rank == 0:
                     save_checkpoint(
-                        model,
+                        model.module.encoder,
                         optimizer,
                         real_step,
                         save_dir / f"model_{real_step}.pth",

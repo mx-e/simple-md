@@ -32,13 +32,14 @@ class BaseConfig:
 
 BaseSlurmConfig = builds(
     SlurmConfig,
+    partition="gpu-5h",
     cpus_per_task=6,
     gpus_per_task=1,
     memory_gb=32,
     nodes=1,
     tasks_per_node=1,
-    exclude="",
-    constraint="(h100|40gb|80gb)",
+    exclude="head046",
+    constraint="h100|80gb|40gb",
 )
 
 # get main script path
@@ -46,9 +47,7 @@ sif_path = Path(__file__).resolve().parent.parent.parent / "container.sif"
 
 BaseJobConfig = builds(
     Job,
-    partition="gpu-2h",
     image=sif_path,
-    cluster="slurm",
     kwargs={},
     slurm_config=BaseSlurmConfig,
 )

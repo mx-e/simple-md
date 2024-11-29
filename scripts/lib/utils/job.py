@@ -33,7 +33,7 @@ class SlurmConfig:
     """SLURM resource configuration."""
 
     partition: str = "gpu-2h"
-    cpus_per_task: int | None = None
+    cpus_per_task: int | None = 3
     gpus_per_task: int | None = None
     memory_gb: int | None = None
     exclude: str | None = None
@@ -63,9 +63,6 @@ class SlurmConfig:
         if self.exclude:
             params["slurm_exclude"] = self.exclude
 
-        if self.constraint:
-            params["slurm_constraint"] = self.constraint
-
         if self.time_hours:
             params["time"] = f"{self.time_hours}:00:00"
 
@@ -75,6 +72,9 @@ class SlurmConfig:
         if self.tasks_per_node:
             params["tasks_per_node"] = self.tasks_per_node
 
+        if self.constraint:
+            params["slurm_constraint"] = self.constraint
+
         return params
 
 
@@ -83,8 +83,7 @@ class Job:
     """Job to run code on a cluster using apptainer."""
 
     image: str
-    partition: str
-    cluster: str
+    cluster: str = "slurm"
     slurm_config: SlurmConfig = field(default_factory=SlurmConfig)
     kwargs: dict = field(default_factory=dict)
 

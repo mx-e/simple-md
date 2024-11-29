@@ -166,8 +166,8 @@ class PipelineConfig:
         default_factory=list
     )
     pre_collate_processors_val: list[Callable[[list[dict]], list[dict]]] | None = None
-    post_collate_processors: list[Callable[dict, dict]] = field(default_factory=list)
-    post_collate_processors_val: list[Callable[dict, dict]] | None = None
+    post_collate_processors: list[Callable[[dict], dict]] = field(default_factory=list)
+    post_collate_processors_val: list[Callable[[dict], dict]] | None = None
     collate_type: Literal["tall", "flat"] = "tall"
     batch_size_impact: float = 1.0
     needed_props: list[Property] = field(default_factory=list)

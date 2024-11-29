@@ -105,7 +105,7 @@ class LossModule(nn.Module):
         targets: list[str],
         loss_types: dict[str, str],
         weights: dict[str, float] | None = None,
-        losses_per_mol: bool = False,
+        losses_per_atom: bool = False,
     ):
         super().__init__()
         self.targets = [Props[t] for t in targets]
@@ -115,7 +115,7 @@ class LossModule(nn.Module):
             else {t: 1.0 for t in self.targets}
         )
         self.loss_types = {Props[t]: LossType[lt] for t, lt in loss_types.items()}
-        self.losses_per_mol = losses_per_mol
+        self.losses_per_atom = losses_per_atom
         assert (
             len(self.targets) == len(self.weights) == len(self.loss_types)
         ), "For each target, a loss weight and a loss type must be configured"
@@ -150,7 +150,7 @@ class LossModule(nn.Module):
                 if self.training
                 else self.loss_funcs_val[loss_prop]
             )
-            reduction = "none" if self.losses_per_mol and not self.training else "mean"
+            reduction = "none" if self.losses_per_atom and not self.training else "mean"
             # handle atomref targets
             loss_dict_prop = loss_prop
             if loss_prop in atomref_val_targets and not self.training:
@@ -160,7 +160,7 @@ class LossModule(nn.Module):
                 predictions[loss_prop], inputs[loss_prop], mask, reduction=reduction
             )
 
-        if self.losses_per_mol:
+        if self.losses_per_atom:
             return losses
         weighted_losses = {k: v * self.weights[k] for k, v in losses.items()}
         losses["total"] = sum(weighted_losses.values())
