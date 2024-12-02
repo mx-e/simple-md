@@ -44,9 +44,9 @@ def main(
     cfg: BaseConfig,
     temperature: float = 300,
     timestep: float = 0.5,
-    n_data_aug: int = 1,
+    n_data_aug: int = 32,
     step_wise_random: bool = False,
-    n_steps: int = 1000,
+    n_steps: int = 10000,
     thermostat_type: Literal[
         "nose_hoover", "berendsen", "andersen", "langevin"
     ] = "langevin",
@@ -60,7 +60,7 @@ def main(
         "ethanol",
         "hydrogen",
         "silver_trimer",
-    ] = "ethanol",
+    ] = "silver_trimer",
     model_run_dir: Path = MISSING,
     checkpoint_name: str = "best_model",
 ):

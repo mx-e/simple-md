@@ -166,5 +166,6 @@ wandb
 
 outputs
 data_ar
+models
 
 **/*.sif

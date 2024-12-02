@@ -534,13 +534,13 @@ class NodeLevelRegressionHead(nn.Module):
 
         if self.target_type == PropertyType.mol_wise:
             h = (
-                h[:, 0, :]
+                h[:, 0, :]  # (b,e)
                 if self.cls_token
-                else (h * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-9)
+                else (h * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-9)  # (b,e)
             )
         elif self.target_type == PropertyType.atom_wise:
             if self.cls_token:
-                h = h[:, 1:, :]
+                h = h[:, 1:, :]  # (b,n-1,e)
 
         h = h * mask
         return self.mlp(h)
@@ -651,8 +651,8 @@ electron_config = th.tensor([
   [ 97, 2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 9, 0,  2, 0,  0,  9], # Bk
   [ 98, 2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 10,0,  2, 0,  0, 10], # Cf
   [ 99, 2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 11,0,  2, 0,  0, 11], # Es
-  [100, 2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 12,0,  2, 0,  0, 12]  # Fm
-            
+  [100, 2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 12,0,  2, 0,  0, 12],  # Fm
+  [101, 0, 0, 0, 0, 0, 0,  0, 0, 0,  0, 0, 0,  0,  0, 0, 0, 0, 0,  0, 0,  0,  0]  # Md
 ], dtype=th.float32)            
 # fmt: on
 electron_config = electron_config / th.max(electron_config, axis=0).values
