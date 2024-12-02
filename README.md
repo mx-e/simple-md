@@ -158,3 +158,16 @@ After editing dependencies rebuild using the ```rebuild``` alias.
 ### Legacy version
 
 This template is based on a [previous example project](https://github.com/mx-e/example_project_ml_cluster).
+
+## Dataset Setup
+
+### QCML
+
+Coming
+
+### MD17/MD22/sGDML
+
+In order to download the sGDML datasets (which contain e.g. MD17/MD22), activate the poetry environment and execute this in the directory where you want to download the data:
+```bash
+poetry run sgdml-get dataset all
+```
