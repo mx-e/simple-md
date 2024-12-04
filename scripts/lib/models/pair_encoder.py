@@ -2,15 +2,15 @@ import math
 from functools import partial
 
 import torch as th
-from torch import nn
-from torch.nn import functional as F
-
-from lib.types import Property as Props, property_type, PropertyType, PipelineConfig
 from lib.data.transforms import (
-    center_positions_on_centroid,
     augment_positions,
+    center_positions_on_centroid,
     dynamic_batch_size,
 )
+from lib.types import PipelineConfig, PropertyType, property_type
+from lib.types import Property as Props
+from torch import nn
+from torch.nn import functional as F
 
 NODE_FEATURES_OFFSET = 128
 
@@ -37,11 +37,7 @@ def get_pair_encoder_pipeline_config(
         )
     ]
     dyn_batch = [
-        (
-            partial(dynamic_batch_size, cutoff=dynamic_batch_size_cutoff)
-            if dynamic_batch_size_cutoff
-            else None
-        )
+        (partial(dynamic_batch_size, cutoff=dynamic_batch_size_cutoff) if dynamic_batch_size_cutoff else None)
     ]
     needed_props = [
         Props.positions,
@@ -55,9 +51,7 @@ def get_pair_encoder_pipeline_config(
     if include_dipole:
         needed_props += [Props.dipole]
     return PipelineConfig(
-        pre_collate_processors=(
-            [center_positions_on_centroid] if center_positions else []
-        ),
+        pre_collate_processors=([center_positions_on_centroid] if center_positions else []),
         post_collate_processors=augment + dyn_batch,
         post_collate_processors_val=[],
         collate_type="tall",
@@ -84,14 +78,12 @@ class PairEncoder(nn.Module):
         decomposer_type: str,
         target_heads: list[str],
         head_project_down: bool,
-    ):
+    ) -> None:
         super().__init__()
         self.embedding = PairEmbedding(embd_dim, num_3d_kernels, cls_token)
         self.composer = Composer(embd_dim)
         assert decomposer_type in ["pooling", "diagonal"], "Invalid decomposer type"
-        self.decomposer_class = (
-            DiagonalDecomposer if decomposer_type == "diagonal" else PoolingDecomposer
-        )
+        self.decomposer_class = DiagonalDecomposer if decomposer_type == "diagonal" else PoolingDecomposer
         self.decomposer = self.decomposer_class(embd_dim)
         self.layers = nn.ModuleList(
             [
@@ -123,10 +115,10 @@ class PairEncoder(nn.Module):
             }
         )
 
-    def reset_parameters(self):
+    def reset_parameters(self) -> None:
         self.apply(self._init_weights)
 
-    def _init_weights(self, module):
+    def _init_weights(self, module) -> None:
         if isinstance(module, nn.Linear):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
@@ -134,7 +126,7 @@ class PairEncoder(nn.Module):
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, inputs):
+    def forward(self, inputs) -> dict:
         h, e, mask = self.embedding(inputs)
         x = self.composer((h, e, mask))
 
@@ -150,22 +142,19 @@ class PairEncoder(nn.Module):
         return out
 
 
-def pairwise_directions_from_positions(positions: th.Tensor, eps=1e-5):
-    # positions: (b, n, 3)
-    b, n, _ = positions.shape
+def pairwise_directions_from_positions(positions: th.Tensor, eps=1e-5) -> th.Tensor:
+    b, n, _ = positions.shape  # positions: (b, n, 3)
     positions_i = positions.unsqueeze(2).expand(-1, -1, n, -1)  # (b, n, n, 3)
     positions_j = positions.unsqueeze(1).expand(-1, n, -1, -1)  # (b, n, n, 3)
     directions = positions_j - positions_i  # (b, n, n, 3)
     normed_directions = directions / (th.norm(directions, dim=-1, keepdim=True) + eps)
     # get azimuth and polar angles
-    azimuth = th.atan2(
-        normed_directions[..., 1], normed_directions[..., 0]
-    )  # (b, n, n)
+    azimuth = th.atan2(normed_directions[..., 1], normed_directions[..., 0])  # (b, n, n)
     polar = th.acos(normed_directions[..., 2])  # (b, n, n)
     return th.stack([azimuth, polar], dim=-1)  # (b, n, n, 2)
 
 
-def add_graph_level_token(positions, atomic_numbers, mask):
+def add_graph_level_token(positions, atomic_numbers, mask) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
     positions = th.cat(
         [
             th.zeros_like(positions[:, :1]),
@@ -191,7 +180,7 @@ def add_graph_level_token(positions, atomic_numbers, mask):
 
 
 class PairEmbedding(nn.Module):
-    def __init__(self, embd_dim, num_3d_kernels, cls_token):
+    def __init__(self, embd_dim, num_3d_kernels, cls_token) -> None:
         super().__init__()
         self.num_3d_kernels = num_3d_kernels
         self.cls_token = cls_token
@@ -206,12 +195,10 @@ class PairEmbedding(nn.Module):
         nn.init.normal_(self.charge_embed.weight, mean=0.0, std=0.02)
 
         # pair features
-        self.m3d_embed = Gaussian3DEmbed(
-            embd_dim, 2 * NODE_FEATURES_OFFSET + 1, self.num_3d_kernels
-        )
+        self.m3d_embed = Gaussian3DEmbed(embd_dim, 2 * NODE_FEATURES_OFFSET + 1, self.num_3d_kernels)
         self.directional_embed = FourierDirectionalEmbed(embd_dim, num_kernel=128)
 
-    def forward(self, inputs):
+    def forward(self, inputs) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
         positions, atomic_numbers, mask, multiplicity, charge = (
             inputs[Props.positions],
             inputs[Props.atomic_numbers],
@@ -221,16 +208,12 @@ class PairEmbedding(nn.Module):
         )
 
         if self.cls_token:
-            positions, atomic_numbers, mask = add_graph_level_token(
-                positions, atomic_numbers, mask
-            )
+            positions, atomic_numbers, mask = add_graph_level_token(positions, atomic_numbers, mask)
 
         h = self.nuclear_embedding(atomic_numbers.long())  # (b,n,e)
 
         multipl_embed = self.multiplicity_embed(multiplicity)  # (b,1,e)
-        charge_embed = self.charge_embed(
-            charge + (NODE_FEATURES_OFFSET // 2)
-        )  # (b,1,e)
+        charge_embed = self.charge_embed(charge + (NODE_FEATURES_OFFSET // 2))  # (b,1,e)
         g = multipl_embed + charge_embed  # (b,1,e)
         if self.cls_token:
             h[:, 0] += g.squeeze(1)
@@ -254,12 +237,12 @@ class Composer(nn.Module):
         self,
         embed_dim,
         linear: bool = True,
-    ):
+    ) -> None:
         super().__init__()
         concat_dim = 2 * embed_dim
         self.node_proj = MLP(concat_dim, embed_dim, linear=linear)
 
-    def forward(self, inputs):
+    def forward(self, inputs) -> th.Tensor:
         h, e, _ = inputs
         # create pair of node embeddings
         h_i = h.unsqueeze(2).expand(-1, -1, h.size(1), -1)  # (b,n,n,e)
@@ -271,14 +254,14 @@ class Composer(nn.Module):
 
 
 class PoolingDecomposer(nn.Module):
-    def __init__(self, embd_dim):
+    def __init__(self, embd_dim) -> None:
         super().__init__()
         self.node_dim = embd_dim
 
         self.out_proj = MLP(embd_dim, 2 * embd_dim)
         self.node_mlp = MLP(embd_dim, embd_dim)
 
-    def forward(self, x):
+    def forward(self, x) -> th.Tensor:
         x1, x2 = self.out_proj(x).chunk(2, dim=-1)  # (b,n,n,2e)
         x = x1 + x2.transpose(1, 2)  # (b,n,n,e)
         x = x.sum(dim=2)  # (b,n,e)
@@ -287,12 +270,12 @@ class PoolingDecomposer(nn.Module):
 
 
 class DiagonalDecomposer(nn.Module):
-    def __init__(self, embed_dim):
+    def __init__(self, embed_dim) -> None:
         super().__init__()
         self.out_proj = MLP(embed_dim, embed_dim)
         self.node_mlp = MLP(embed_dim, embed_dim)
 
-    def forward(self, x):
+    def forward(self, x) -> th.Tensor:
         x = self.out_proj(x)  # (b,n,n,e)
         x = x.diagonal(dim1=1, dim2=2).transpose(-1, -2)  # (b,n,e)
         x = self.node_mlp(x)  # (b,n,e)
@@ -307,7 +290,7 @@ class FFN(nn.Module):
         dropout: float = 0,
         activation: str = "relu",
         norm: str = "batch",
-    ):
+    ) -> None:
         super().__init__()
 
         if activation == "relu":
@@ -339,7 +322,7 @@ class FFN(nn.Module):
         self.dropout = dropout
 
     @th.compile
-    def forward(self, x_prior, x):
+    def forward(self, x_prior, x) -> th.Tensor:
         x = self.dropout_aggregate(x)
         x = x_prior + x
         x = self.norm_aggregate(x)
@@ -358,7 +341,7 @@ class EdgeTransformerLayer(nn.Module):
         activation: str = "relu",
         norm: str = "batch",
         norm_first: bool = False,
-    ):
+    ) -> None:
         super().__init__()
         self.norm_first = norm_first
         self.attention = FastEdgeAttention(embed_dim, num_heads, attention_dropout)
@@ -368,36 +351,33 @@ class EdgeTransformerLayer(nn.Module):
 
         self.ffn = FFN(embed_dim, ffn_multiplier, dropout, activation, norm)
 
-    def forward(self, x_in, mask=None):
+    def forward(self, x_in, mask=None) -> th.Tensor:
         x = x_in
 
         if self.norm_first:
             x = self.norm(x)
 
-        if mask is not None:
-            x_upd = self.attention(x, x, x, ~mask)
-        else:
-            x_upd = self.attention(x, x, x)
+        x_upd = self.attention(x, x, x, ~mask) if mask is not None else self.attention(x, x, x)
         x = self.ffn(x_in, x_upd)
         return x
 
 
-def triang_attn(q, k):
+def triang_attn(q, k) -> th.Tensor:
     out = q.unsqueeze(3) * k.unsqueeze(1)
     return out.sum(dim=5)
 
 
-def val_fusion(v1, v2):
+def val_fusion(v1, v2) -> th.Tensor:
     return v1.unsqueeze(3) * v2.unsqueeze(1)
 
 
-def final_comp(att, val):
+def final_comp(att, val) -> th.Tensor:
     out = att.unsqueeze(-1) * val
     return out.sum(dim=2)
 
 
 class FastEdgeAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, dropout):
+    def __init__(self, embed_dim, num_heads, dropout) -> None:
         super().__init__()
 
         self.embed_dim = embed_dim
@@ -412,7 +392,7 @@ class FastEdgeAttention(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
 
     @th.compile
-    def forward(self, query, key, value, mask=None):
+    def forward(self, query, key, value, mask=None) -> th.Tensor:
         num_batches = query.size(0)
         num_nodes_q = query.size(1)
         num_nodes_k = key.size(1)
@@ -422,12 +402,8 @@ class FastEdgeAttention(nn.Module):
         left_v = self.v1lin(value)
         right_v = self.v2lin(value)
 
-        left_k = left_k.view(
-            num_batches, num_nodes_q, num_nodes_q, self.num_heads, self.d_k
-        )
-        right_k = right_k.view(
-            num_batches, key.size(1), key.size(2), self.num_heads, self.d_k
-        )
+        left_k = left_k.view(num_batches, num_nodes_q, num_nodes_q, self.num_heads, self.d_k)
+        right_k = right_k.view(num_batches, key.size(1), key.size(2), self.num_heads, self.d_k)
         left_v = left_v.view_as(right_k)
         right_v = right_v.view_as(right_k)
 
@@ -439,11 +415,7 @@ class FastEdgeAttention(nn.Module):
 
         if mask is not None:
             scores_dtype = scores.dtype
-            scores = (
-                scores.to(th.float32)
-                .masked_fill(mask.unsqueeze(4), -1e9)
-                .to(scores_dtype)
-            )
+            scores = scores.to(th.float32).masked_fill(mask.unsqueeze(4), -1e9).to(scores_dtype)
 
         att = F.softmax(scores, dim=2)
         att = self.dropout(att)
@@ -458,9 +430,7 @@ class FastEdgeAttention(nn.Module):
 
 
 class MLP(nn.Sequential):
-    def __init__(
-        self, input_dim, output_dim, dropout: float = 0.0, linear: bool = False
-    ):
+    def __init__(self, input_dim, output_dim, dropout: float = 0.0, linear: bool = False) -> None:
         if not linear:
             hidden_dim = output_dim
 
@@ -488,7 +458,7 @@ class NodeLevelRegressionHead(nn.Module):
         activation: str,
         head_dropout: float,
         project_down: bool,
-    ):
+    ) -> None:
         super().__init__()
         self.cls_token = cls_token
         self.final_ln_node = nn.LayerNorm(embd_dim)
@@ -517,16 +487,16 @@ class NodeLevelRegressionHead(nn.Module):
             PropertyType.atom_wise,
         ], f"Invalid target type {self.target_type}"
 
-    def reset_parameters(self):
+    def reset_parameters(self) -> None:
         self.apply(self._init_weights)
 
-    def _init_weights(self, module):
+    def _init_weights(self, module) -> None:
         if isinstance(module, nn.Linear):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
-    def forward(self, h, inputs):
+    def forward(self, h, inputs) -> th.Tensor:
         mask = inputs[Props.mask]
         h = h.clone()  # (b,n,e)
         h = self.final_ln_node(h)  # (b,n,e)
@@ -538,18 +508,17 @@ class NodeLevelRegressionHead(nn.Module):
                 if self.cls_token
                 else (h * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-9)  # (b,e)
             )
-        elif self.target_type == PropertyType.atom_wise:
-            if self.cls_token:
-                h = h[:, 1:, :]  # (b,n-1,e)
+        elif self.target_type == PropertyType.atom_wise and self.cls_token:
+            h = h[:, 1:, :]  # (b,n-1,e)
 
         h = h * mask
         return self.mlp(h)
 
 
 # fmt: off
-# up until Z = 100; vs = valence s, vp = valence p, vd = valence d, vf = valence f. 
+# up until Z = 100; vs = valence s, vp = valence p, vd = valence d, vf = valence f.
 # electron configuration follows the Aufbauprinzip. Exceptions are in the Lanthanides and Actinides (5f and 6d subshells are energetically very close).
-electron_config = th.tensor([            
+electron_config = th.tensor([
   #  Z 1s 2s 2p 3s 3p 4s  3d 4p 5s  4d 5p 6s  4f  5d 6p 7s 5f 6d   vs vp  vd  vf
   [  0, 0, 0, 0, 0, 0, 0,  0, 0, 0,  0, 0, 0,  0,  0, 0, 0, 0, 0,  0, 0,  0,  0], # n
   [  1, 1, 0, 0, 0, 0, 0,  0, 0, 0,  0, 0, 0,  0,  0, 0, 0, 0, 0,  1, 0,  0,  0], # H
@@ -647,21 +616,21 @@ electron_config = th.tensor([
   [ 93, 2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 4, 1,  2, 0,  1,  4], # Np
   [ 94, 2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 6, 0,  2, 0,  0,  6], # Pu
   [ 95, 2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 7, 0,  2, 0,  0,  7], # Am
-  [ 96, 2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 7, 1,  2, 0,  1,  7], # Cm  
+  [ 96, 2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 7, 1,  2, 0,  1,  7], # Cm
   [ 97, 2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 9, 0,  2, 0,  0,  9], # Bk
   [ 98, 2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 10,0,  2, 0,  0, 10], # Cf
   [ 99, 2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 11,0,  2, 0,  0, 11], # Es
   [100, 2, 2, 6, 2, 6, 2, 10, 6, 2, 10, 6, 2, 14, 10, 6, 2, 12,0,  2, 0,  0, 12],  # Fm
   [101, 0, 0, 0, 0, 0, 0,  0, 0, 0,  0, 0, 0,  0,  0, 0, 0, 0, 0,  0, 0,  0,  0]  # Md
-], dtype=th.float32)            
+], dtype=th.float32)
 # fmt: on
 electron_config = electron_config / th.max(electron_config, axis=0).values
 MAX_Z = 101
 
 
 class NuclearEmbedding(nn.Module):
-    def __init__(self, embedding_dim, zero_init=True, cls_token=True):
-        super(NuclearEmbedding, self).__init__()
+    def __init__(self, embedding_dim, zero_init=True, cls_token=True) -> None:
+        super().__init__()
         self.cls_token = cls_token
         self.embedding = nn.Embedding(MAX_Z + 1, embedding_dim)
 
@@ -669,7 +638,7 @@ class NuclearEmbedding(nn.Module):
         self.config_linear = nn.Linear(electron_config.shape[1], embedding_dim)
         self.reset_parameters(zero_init)
 
-    def reset_parameters(self, zero_init=True):
+    def reset_parameters(self, zero_init=True) -> None:
         if zero_init:
             nn.init.zeros_(self.embedding.weight)
             nn.init.zeros_(self.config_linear.weight)
@@ -677,11 +646,9 @@ class NuclearEmbedding(nn.Module):
             nn.init.uniform_(self.embedding, -math.sqrt(3), math.sqrt(3))
             nn.init.orthogonal_(self.config_linear.weight)
 
-    def forward(self, atomic_numbers):
+    def forward(self, atomic_numbers) -> th.Tensor:
         embedding = self.embedding(atomic_numbers)  # (B, N, embedding_dim)
-        electronic_embedding = self.config_linear(
-            self.electron_config[atomic_numbers.long()]
-        )  # (B, N, embedding_dim)
+        electronic_embedding = self.config_linear(self.electron_config[atomic_numbers.long()])  # (B, N, embedding_dim)
         if self.cls_token:
             electronic_embedding[:, 0, :] = 0.0
         embedding += electronic_embedding
@@ -689,7 +656,7 @@ class NuclearEmbedding(nn.Module):
 
 
 class FourierDirectionalEmbed(nn.Module):
-    def __init__(self, num_heads, num_kernel):
+    def __init__(self, num_heads, num_kernel) -> None:
         assert num_kernel % 2 == 0
 
         super().__init__()
@@ -700,15 +667,9 @@ class FourierDirectionalEmbed(nn.Module):
         max_polar = math.pi
 
         wave_lengths_azimuthal = th.exp(
-            th.linspace(
-                math.log(2 * min_angle), math.log(2 * max_azimuthal), num_kernel // 2
-            )
+            th.linspace(math.log(2 * min_angle), math.log(2 * max_azimuthal), num_kernel // 2)
         )
-        wave_lengths_polar = th.exp(
-            th.linspace(
-                math.log(2 * min_angle), math.log(2 * max_polar), num_kernel // 2
-            )
-        )
+        wave_lengths_polar = th.exp(th.linspace(math.log(2 * min_angle), math.log(2 * max_polar), num_kernel // 2))
         angular_freqs_azimuthal = 2 * math.pi / wave_lengths_azimuthal
         angular_freqs_polar = 2 * math.pi / wave_lengths_polar
         self.register_buffer("angular_freqs_azimuthal", angular_freqs_azimuthal)
@@ -716,7 +677,7 @@ class FourierDirectionalEmbed(nn.Module):
 
         self.proj = nn.Linear(num_kernel * 2, num_heads)
 
-    def forward(self, direction):
+    def forward(self, direction) -> th.Tensor:
         azimuthal, polar = direction.unbind(-1)
         phase_azimuthal = azimuthal.unsqueeze(-1) * self.angular_freqs_azimuthal
         phase_polar = polar.unsqueeze(-1) * self.angular_freqs_polar
@@ -734,15 +695,15 @@ class FourierDirectionalEmbed(nn.Module):
 
 
 class NonLinear(nn.Module):
-    def __init__(self, input, output_size, hidden=None):
-        super(NonLinear, self).__init__()
+    def __init__(self, input_size, output_size, hidden=None) -> None:
+        super().__init__()
 
         if hidden is None:
             hidden = input
-        self.layer1 = nn.Linear(input, hidden)
+        self.layer1 = nn.Linear(input_size, hidden)
         self.layer2 = nn.Linear(hidden, output_size)
 
-    def forward(self, x):
+    def forward(self, x) -> th.Tensor:
         x = self.layer1(x)
         x = F.gelu(x)
         x = self.layer2(x)
@@ -750,8 +711,8 @@ class NonLinear(nn.Module):
 
 
 class Gaussian3DEmbed(nn.Module):
-    def __init__(self, num_heads, num_edges, num_kernel):
-        super(Gaussian3DEmbed, self).__init__()
+    def __init__(self, num_heads, num_edges, num_kernel) -> None:
+        super().__init__()
         self.num_heads = num_heads
         self.num_edges = num_edges
         self.num_kernel = num_kernel
@@ -759,36 +720,21 @@ class Gaussian3DEmbed(nn.Module):
         self.gbf = GaussianLayer(self.num_kernel, num_edges)
         self.gbf_proj = NonLinear(self.num_kernel, self.num_heads)
 
-    def forward(self, dist, node_type_edge):
+    def forward(self, dist, node_type_edge) -> th.Tensor:
         edge_feature = self.gbf(dist, node_type_edge.long())  # (b, n, n, K)
         gbf_result = self.gbf_proj(edge_feature)  # (b, n, n, H)
         return gbf_result
 
 
 @th.jit.script
-def gaussian(x, mean, std):
+def gaussian(x, mean, std) -> th.Tensor:
     pi = 3.14159
     a = (2 * pi) ** 0.5
     return th.exp(-0.5 * (((x - mean) / std) ** 2)) / (a * std)
 
 
-def pairwise_directions_from_positions(positions: th.Tensor, eps=1e-5):
-    # positions: (b, n, 3)
-    b, n, _ = positions.shape
-    positions_i = positions.unsqueeze(2).expand(-1, -1, n, -1)  # (b, n, n, 3)
-    positions_j = positions.unsqueeze(1).expand(-1, n, -1, -1)  # (b, n, n, 3)
-    directions = positions_j - positions_i  # (b, n, n, 3)
-    normed_directions = directions / (th.norm(directions, dim=-1, keepdim=True) + eps)
-    # get azimuth and polar angles
-    azimuth = th.atan2(
-        normed_directions[..., 1], normed_directions[..., 0]
-    )  # (b, n, n)
-    polar = th.acos(normed_directions[..., 2])  # (b, n, n)
-    return th.stack([azimuth, polar], dim=-1)  # (b, n, n, 2)
-
-
 class GaussianLayer(nn.Module):
-    def __init__(self, K=128, edge_types=512 * 3):
+    def __init__(self, K=128, edge_types=512 * 3) -> None:
         super().__init__()
         self.K = K
         self.means = nn.Embedding(1, K)
@@ -800,7 +746,7 @@ class GaussianLayer(nn.Module):
         nn.init.constant_(self.bias.weight, 0)
         nn.init.constant_(self.mul.weight, 1)
 
-    def forward(self, x, edge_types):
+    def forward(self, x, edge_types) -> th.Tensor:
         mul = self.mul(edge_types).sum(dim=-2)
         bias = self.bias(edge_types).sum(dim=-2)
         x = mul * x.unsqueeze(-1) + bias

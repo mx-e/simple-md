@@ -1,37 +1,32 @@
 #! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data /home/maxi/MOLECULAR_ML/5_refactored_repo/container.sif python
+import csv
 from functools import partial
 from pathlib import Path
-import csv
 from typing import Literal
 
-import torch as th
-import torch.nn as nn
 import numpy as np
-from omegaconf import MISSING
+import torch as th
 import torch.multiprocessing as mp
-from hydra_zen import load_from_yaml, instantiate
-
-from matplotlib import pyplot as plt
-from loguru import logger
 from ase import units
-from ase.io import read, write, trajectory
-from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
-from ase.md.nvtberendsen import NVTBerendsen
+from ase.calculators.calculator import Calculator, all_changes
+from ase.io import read, trajectory, write
 from ase.md.andersen import Andersen
 from ase.md.langevin import Langevin  # Added Langevin thermostat
 from ase.md.npt import NPT  # Added NPT with Nosé-Hoover
 from ase.md.nvtberendsen import NVTBerendsen  # Added Berendsen thermostat
-from ase.calculators.calculator import Calculator, all_changes
-
-from conf.base_conf import configure_main, BaseConfig
-from lib.utils.dist import setup_device
-from lib.utils.checkpoint import load_checkpoint
-from lib.types import Property as Props
-from lib.data.loaders import collate_fn, batch_tall
+from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+from conf.base_conf import BaseConfig, configure_main
+from hydra_zen import instantiate, load_from_yaml
+from lib.data.loaders import batch_tall, collate_fn
 from lib.data.transforms import center_positions_on_centroid, get_random_rotations
+from lib.types import Property as Props
+from lib.utils.checkpoint import load_checkpoint
+from lib.utils.dist import get_amp, setup_device
 from lib.utils.helpers import get_hydra_output_dir
 from lib.utils.run import run
-
+from loguru import logger
+from matplotlib import pyplot as plt
+from omegaconf import MISSING
 
 BOHR_TO_ANG = 0.529177249  # Bohr to Angstrom
 HARTREE_TO_EV = 27.211386245988  # Hartree to eV
@@ -47,9 +42,7 @@ def main(
     n_data_aug: int = 32,
     step_wise_random: bool = False,
     n_steps: int = 10000,
-    thermostat_type: Literal[
-        "nose_hoover", "berendsen", "andersen", "langevin"
-    ] = "langevin",
+    thermostat_type: Literal["nose_hoover", "berendsen", "andersen", "langevin"] = "langevin",
     thermostat_taut: float = 100.0,
     init_struct_dir: Path = "data_md",
     init_struct: Literal[
@@ -63,11 +56,12 @@ def main(
     ] = "silver_trimer",
     model_run_dir: Path = MISSING,
     checkpoint_name: str = "best_model",
-):
+    ptdtype: Literal["float32", "bfloat16", "float16"] = "float32",
+) -> None:
     logger.info(f"Running with base config: {cfg}")
     mp.set_start_method("spawn", force=True)
     job_dir = get_hydra_output_dir()
-    ctx, device = setup_device()
+    device, ctx = setup_device(), get_amp(ptdtype)
     model_run_conf_path = model_run_dir / ".hydra" / "config.yaml"
     model_run_conf = load_from_yaml(model_run_conf_path)
     model_conf = model_run_conf["train"]["model"]
@@ -125,12 +119,8 @@ def main(
     # Print final statistics
     final_stats = energy_tracker.get_stats()
     logger.info("Simulation Statistics:")
-    logger.info(
-        f"  Average Temperature: {final_stats['avg_temperature']:.1f} ± {final_stats['temp_std']:.1f} K"
-    )
-    logger.info(
-        f"  Average Kinetic Energy: {final_stats['avg_kinetic']:.3f} ± {final_stats['kinetic_std']:.3f} eV"
-    )
+    logger.info(f"  Average Temperature: {final_stats['avg_temperature']:.1f} ± {final_stats['temp_std']:.1f} K")
+    logger.info(f"  Average Kinetic Energy: {final_stats['avg_kinetic']:.3f} ± {final_stats['kinetic_std']:.3f} eV")
 
 
 def run_md_simulation(
@@ -146,9 +136,7 @@ def run_md_simulation(
     trajectory_file="md_trajectory.traj",
     thermostat_type="Nose-Hoover",  # Added thermostat selection
     taut=100.0,  # Thermostat time constant in fs
-):
-    """Run MD simulation using the trained model with thermostat control"""
-
+) -> "MDEnergyTracker":
     # Set up calculator
     calculator = MLCalculator(
         model,
@@ -177,14 +165,10 @@ def run_md_simulation(
         )
     elif thermostat_type.lower() == "berendsen":
         # Berendsen thermostat (NVT ensemble)
-        dyn = NVTBerendsen(
-            atoms, timestep * units.fs, temperature_K=temperature, taut=taut * units.fs
-        )
+        dyn = NVTBerendsen(atoms, timestep * units.fs, temperature_K=temperature, taut=taut * units.fs)
     elif thermostat_type.lower() == "andersen":
         # Andersen thermostat
-        dyn = Andersen(
-            atoms, timestep * units.fs, temperature_K=temperature, andersen_prob=0.01
-        )
+        dyn = Andersen(atoms, timestep * units.fs, temperature_K=temperature, andersen_prob=0.01)
     elif thermostat_type.lower() == "langevin":
         # Langevin thermostat
         # friction parameter is 1/taut
@@ -202,7 +186,7 @@ def run_md_simulation(
     energy_tracker = MDEnergyTracker(atoms, timestep, temperature)
     xyz_trajectory = []
 
-    def save_frame():
+    def save_frame() -> None:
         frame = atoms.copy()
         frame.info["comment"] = (
             f"time={len(xyz_trajectory) * timestep * 10:.1f}fs "
@@ -217,9 +201,7 @@ def run_md_simulation(
     dyn.attach(energy_tracker, interval=10)
 
     # Run dynamics with improved monitoring
-    logger.info(
-        f"Starting MD simulation with {thermostat_type} thermostat for {steps} steps..."
-    )
+    logger.info(f"Starting MD simulation with {thermostat_type} thermostat for {steps} steps...")
     logger.info(f"Target temperature: {temperature}K")
     logger.info(f"Thermostat time constant: {taut}fs")
 
@@ -232,26 +214,19 @@ def run_md_simulation(
 
             logger.info(f"Step {i}:")
             logger.info(
-                f"  Temperature: {temp:.1f}K (Target: {temperature}K, "
-                f"Deviation: {temp_deviation_percent:.1f}%)"
+                f"  Temperature: {temp:.1f}K (Target: {temperature}K, Deviation: {temp_deviation_percent:.1f}%)"
             )
             logger.info(f"  Kinetic Energy: {atoms.get_kinetic_energy():.3f} eV")
             # Check simulation stability
-            if np.any(np.isnan(atoms.get_positions())) or np.any(
-                np.isnan(atoms.get_velocities())
-            ):
-                logger.error(
-                    "Simulation unstable: NaN detected in positions or velocities!"
-                )
+            if np.any(np.isnan(atoms.get_positions())) or np.any(np.isnan(atoms.get_velocities())):
+                logger.error("Simulation unstable: NaN detected in positions or velocities!")
                 break
 
             # Check molecular integrity
             distances = atoms.get_all_distances()
             max_dist = np.max(distances)
             if max_dist > 10.0:  # Å
-                logger.warning(
-                    f"Simulation unstable: Atoms too far apart ({max_dist:.2f} Å)!"
-                )
+                logger.warning(f"Simulation unstable: Atoms too far apart ({max_dist:.2f} Å)!")
 
     logger.info("MD simulation completed!")
 
@@ -273,7 +248,7 @@ class MLCalculator(Calculator):
     implemented_properties = ["forces"]
     not_implemented_properties = ["energy"]
 
-    def __init__(self, model, device, ctx, rotations=None, step_wise_random_aug=False):
+    def __init__(self, model, device, ctx, rotations=None, step_wise_random_aug=False) -> None:
         super().__init__()
         self.model = model
         self.device = device
@@ -296,7 +271,7 @@ class MLCalculator(Calculator):
         self.rotations = rotations
         self.step_wise_random_aug = step_wise_random_aug
 
-    def convert_atoms_to_model_input(self, atoms, rotations):
+    def convert_atoms_to_model_input(self, atoms, rotations) -> tuple[dict, th.Tensor]:
         """Convert ASE Atoms object to model input format"""
         positions_bohr = atoms.positions * ANG_TO_BOHR
         spin = atoms.get_initial_magnetic_moments().sum()
@@ -313,30 +288,26 @@ class MLCalculator(Calculator):
         reverse_rotations = None
         if rotations is not None:
             for k, v in data.items():
-                expand_shape = (len(rotations),) + tuple(-1 for _ in range(v.dim() - 1))
+                expand_shape = (len(rotations), *tuple(-1 for _ in range(v.dim() - 1)))
                 data[k] = v.expand(expand_shape)
             if self.step_wise_random_aug:
-                random_offset_rotation = get_random_rotations(1, self.device).expand(
-                    len(rotations), -1, -1
-                )
+                random_offset_rotation = get_random_rotations(1, self.device).expand(len(rotations), -1, -1)
                 rotations_step = th.bmm(rotations, random_offset_rotation)
             else:
                 rotations_step = rotations
 
-            data[Props.positions] = th.bmm(
-                data[Props.positions], rotations_step
-            ).squeeze()
+            data[Props.positions] = th.bmm(data[Props.positions], rotations_step).squeeze()
             reverse_rotations = rotations_step.transpose(1, 2)
         return data, reverse_rotations
 
     @th.no_grad()
-    def calculate(self, atoms=None, properties=["forces"], system_changes=all_changes):
+    def calculate(self, atoms=None, properties=None, system_changes=all_changes) -> None:
+        if properties is None:
+            properties = ["forces"]
         Calculator.calculate(self, atoms, properties, system_changes)
 
         # Convert atoms to model input
-        data, reverse_rotations = self.convert_atoms_to_model_input(
-            atoms, self.rotations
-        )
+        data, reverse_rotations = self.convert_atoms_to_model_input(atoms, self.rotations)
 
         # Get predictions from model
         with self.ctx:
@@ -354,17 +325,7 @@ class MLCalculator(Calculator):
         }
 
 
-def visualize_rotations(
-    rotation_matrices: th.Tensor, save_path: str = "rotation_visualization.png"
-):
-    """
-    Visualize rotation matrices by showing where they map the standard basis vectors.
-    Creates both 3D and 2D projections of the rotations.
-
-    Args:
-        rotation_matrices: (N, 3, 3) tensor of rotation matrices
-        save_path: path to save the visualization
-    """
+def visualize_rotations(rotation_matrices: th.Tensor, save_path: str = "rotation_visualization.png") -> None:
     # Convert to numpy for matplotlib
     R = rotation_matrices.numpy()
     N = len(R)
@@ -452,16 +413,7 @@ def visualize_rotations(
     plt.close()
 
 
-def analyze_rotation_distribution(rotation_matrices: th.Tensor):
-    """
-    Analyze the distribution of rotations by computing pairwise angles.
-
-    Args:
-        rotation_matrices: (N, 3, 3) tensor of rotation matrices
-
-    Returns:
-        dict: Statistics about the rotation distribution
-    """
+def analyze_rotation_distribution(rotation_matrices: th.Tensor) -> dict:
     N = len(rotation_matrices)
 
     # Compute pairwise angles between rotations
@@ -472,9 +424,7 @@ def analyze_rotation_distribution(rotation_matrices: th.Tensor):
             R_rel = th.mm(rotation_matrices[i], rotation_matrices[j].t())
 
             # Convert to angle (in degrees)
-            theta = (
-                th.acos(th.clamp((th.trace(R_rel) - 1) / 2, -1.0, 1.0)) * 180 / np.pi
-            )
+            theta = th.acos(th.clamp((th.trace(R_rel) - 1) / 2, -1.0, 1.0)) * 180 / np.pi
             angles.append(theta.item())
 
     angles = np.array(angles)
@@ -487,19 +437,8 @@ def analyze_rotation_distribution(rotation_matrices: th.Tensor):
     return stats
 
 
-def generate_equidistant_rotations(N, device="cpu"):
-    """
-    Generate N approximately equidistant rotation matrices in SO(3).
-    Uses the Fibonacci sphere method for point distribution, combined with
-    quaternion representation for smooth rotation interpolation.
-
-    Args:
-        N (int): Number of rotation matrices to generate
-        device (str): Pythdevice to use ('cpu' or 'cuda')
-
-    Returns:
-        th.Tensor: (N, 3, 3) tensor containing N rotation matrices
-    """
+# TODO: Check how this function works, sth is weird
+def generate_equidistant_rotations(N, device="cpu") -> th.Tensor:
     # Generate points on a Fibonacci sphere
     phi = (1 + np.sqrt(5)) / 2  # golden ratio
     indices = th.arange(N, dtype=th.float32, device=device)
@@ -519,7 +458,7 @@ def generate_equidistant_rotations(N, device="cpu"):
     points = points / th.norm(points, dim=1, keepdim=True)
 
     # Convert points to rotation matrices using quaternions
-    def points_to_quaternions(points):
+    def points_to_quaternions(points) -> th.Tensor:
         """Convert points on unit sphere to quaternions."""
         # Use the method described in "Uniform Random Rotations" by Ken Shoemake
         u = th.rand(N, dtype=th.float32, device=device)
@@ -534,7 +473,7 @@ def generate_equidistant_rotations(N, device="cpu"):
 
         return th.stack([q1, q2, q3, q4], dim=1)
 
-    def quaternion_to_rotation_matrix(quaternion):
+    def quaternion_to_rotation_matrix(quaternion) -> th.Tensor:
         """Convert quaternions to rotation matrices."""
         q0, q1, q2, q3 = (
             quaternion[:, 0],
@@ -581,7 +520,7 @@ def generate_equidistant_rotations(N, device="cpu"):
 class MDEnergyTracker:
     """Tracks energies and other observables during MD simulation"""
 
-    def __init__(self, atoms, timestep, target_temperature):
+    def __init__(self, atoms, timestep, target_temperature) -> None:
         self.atoms = atoms  # Store reference to atoms object
         self.timestep = timestep
         self.target_temperature = target_temperature
@@ -597,7 +536,7 @@ class MDEnergyTracker:
         logger.info(f"Initial temperature: {self.initial_temp:.1f} K")
         logger.info(f"Initial kinetic energy: {self.initial_kinetic:.3f} eV")
 
-    def __call__(self):
+    def __call__(self) -> None:
         """Called by ASE dynamics at each observation interval"""
         kinetic = self.atoms.get_kinetic_energy()
         temp = self.atoms.get_temperature()
@@ -605,11 +544,9 @@ class MDEnergyTracker:
         self.times.append(len(self.times) * self.timestep * 10)  # Convert to fs
         self.kinetic_energies.append(kinetic)
         self.temperatures.append(temp)
-        self.max_velocities.append(
-            np.max(np.linalg.norm(self.atoms.get_velocities(), axis=1))
-        )
+        self.max_velocities.append(np.max(np.linalg.norm(self.atoms.get_velocities(), axis=1)))
 
-    def plot(self, save_path):
+    def plot(self, save_path) -> None:
         """Plot evolution of available observables"""
         plt.figure(figsize=(12, 9))
 
@@ -653,7 +590,7 @@ class MDEnergyTracker:
         plt.savefig(save_path)
         plt.close()
 
-    def get_stats(self):
+    def get_stats(self) -> dict:
         """Return summary statistics of the simulation"""
         return {
             "avg_temperature": np.mean(self.temperatures),
@@ -662,7 +599,7 @@ class MDEnergyTracker:
             "kinetic_std": np.std(self.kinetic_energies),
         }
 
-    def save_data(self, results_dir: Path):
+    def save_data(self, results_dir: Path) -> None:
         """Save trajectory data to files"""
         results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -679,7 +616,7 @@ class MDEnergyTracker:
 
         # Save as CSV
         csv_path = results_dir / "md_trajectory_data.csv"
-        with open(csv_path, "w", newline="") as f:
+        with csv_path.open("w", newline="") as f:
             # Define the fieldnames (column headers)
             fieldnames = ["time", "temperature", "kinetic_energy", "max_velocity"]
             writer = csv.DictWriter(f, fieldnames=fieldnames)

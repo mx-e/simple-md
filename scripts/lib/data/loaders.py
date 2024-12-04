@@ -1,20 +1,23 @@
 from functools import partial
 
 import torch as th
-from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
-
+from lib.types import (
+    DatasetSplits,
+    PipelineConfig,
+    Split,
+    edge_props_to_local_map,
+    property_dims,
+    property_dtype,
+    property_type,
+)
 from lib.types import (
     Property as Props,
-    PropertyType as PropsType,
-    property_dims,
-    property_type,
-    property_dtype,
-    edge_props_to_local_map,
-    PipelineConfig,
-    DatasetSplits,
-    Split,
 )
+from lib.types import (
+    PropertyType as PropsType,
+)
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 
 def get_loaders(
@@ -25,30 +28,21 @@ def get_loaders(
     device,
     dataset_splits: DatasetSplits,
     pipeline_config: PipelineConfig,
-):
+) -> dict[Split, DataLoader]:
     assert all(
         prop in dataset_splits.dataset_props for prop in pipeline_config.needed_props
     ), f"Props needed by the model not present in the dataset {list(filter(lambda x: x not in dataset_splits.dataset_props, pipeline_config.needed_props))}"
-    needed_props = {
-        prop: dataset_splits.dataset_props[prop]
-        for prop in pipeline_config.needed_props
-    }
+    needed_props = {prop: dataset_splits.dataset_props[prop] for prop in pipeline_config.needed_props}
     # shuffle only train data
     samplers = {
-        k: DistributedSampler(
-            v, shuffle=(k == Split.train), num_replicas=world_size, rank=rank
-        )
+        k: DistributedSampler(v, shuffle=(k == Split.train), num_replicas=world_size, rank=rank)
         for k, v in dataset_splits.splits.items()
     }
     batch_func = batch_flat if pipeline_config.collate_type == "flat" else batch_tall
     assert (
-        batch_size % (world_size * grad_accum_steps * pipeline_config.batch_size_impact)
-        == 0
+        batch_size % (world_size * grad_accum_steps * pipeline_config.batch_size_impact) == 0
     ), "Batch size must be divisible by world_size * grad_accum_steps * pipeline_config.batch_size_impact"
-    effective_batch_size = int(
-        batch_size
-        // (pipeline_config.batch_size_impact * world_size * grad_accum_steps)
-    )
+    effective_batch_size = int(batch_size // (pipeline_config.batch_size_impact * world_size * grad_accum_steps))
     loaders = {
         k: DataLoader(
             ds,
@@ -78,7 +72,7 @@ def get_loaders(
     return loaders
 
 
-def batch_tall(batch, props: list[Props], n_atoms):
+def batch_tall(batch, props: list[Props], n_atoms) -> dict:
     max_atoms = th.max(n_atoms).item()
     out = {Props.mask: th.zeros(len(batch), max_atoms, dtype=bool)}
 
@@ -88,9 +82,7 @@ def batch_tall(batch, props: list[Props], n_atoms):
         elif property_type[prop] == PropsType.atom_wise:
             out[prop] = th.zeros(len(batch), max_atoms, property_dims[prop]).squeeze(-1)
         else:
-            raise NotImplementedError(
-                f"Props type {property_type[prop]} not supported for tall batching"
-            )
+            raise NotImplementedError(f"Props type {property_type[prop]} not supported for tall batching")
 
     for prop in props:
         if property_type[prop] == PropsType.atom_wise:
@@ -100,21 +92,17 @@ def batch_tall(batch, props: list[Props], n_atoms):
     return out
 
 
-def batch_flat(batch, props: list[Props], n_atoms):
+def batch_flat(batch, props: list[Props], n_atoms) -> dict:
     out = {}
     at_cumsum = th.cat([th.zeros(1, dtype=th.int64), th.cumsum(n_atoms, dim=0)])
-    out[Props.mol_idx] = th.repeat_interleave(
-        th.arange(len(batch)), repeats=n_atoms, dim=0
-    )
+    out[Props.mol_idx] = th.repeat_interleave(th.arange(len(batch)), repeats=n_atoms, dim=0)
 
     for prop in props:
         if property_type[prop] == PropsType.edge_wise:
             out_prop = edge_props_to_local_map[prop]
-            out[out_prop] = th.cat(
-                [sample[prop] for sample in batch], dim=0
-            )  # create local edges
+            out[out_prop] = th.cat([sample[prop] for sample in batch], dim=0)  # create local edges
             out[prop] = th.cat(
-                [d[prop] + off for d, off in zip(batch, at_cumsum)],
+                [d[prop] + off for d, off in zip(batch, at_cumsum, strict=True)],
                 dim=0,  # create offset global edges
             )
         else:
@@ -123,7 +111,7 @@ def batch_flat(batch, props: list[Props], n_atoms):
     return out
 
 
-def torchyfy(sample, keys_to_props_map: dict[Props, str]):
+def torchyfy(sample, keys_to_props_map: dict[Props, str]) -> dict:
     torch_sample = {}
     for prop, key in keys_to_props_map.items():
         val = (
@@ -142,9 +130,13 @@ def collate_fn(
     props: list[Props],
     device=None,
     batch_func=batch_tall,
-    pre_batch_preprocessors=[],
-    post_batch_preprocessors=[],
-):
+    pre_batch_preprocessors=None,
+    post_batch_preprocessors=None,
+) -> dict:
+    if pre_batch_preprocessors is None:
+        pre_batch_preprocessors = []
+    if post_batch_preprocessors is None:
+        post_batch_preprocessors = []
     if device is None:
         device = th.device("cuda" if th.cuda.is_available() else "cpu")
     batch = [torchyfy(sample, props) for sample in batch]

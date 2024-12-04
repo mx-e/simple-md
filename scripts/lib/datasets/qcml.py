@@ -1,10 +1,11 @@
-import os
+from pathlib import Path
+
 import tensorflow_datasets as tfds
 import torch.distributed as dist
-from loguru import logger
 from frozendict import frozendict
-from pathlib import Path
-from lib.types import Property as Props, DatasetSplits, Split
+from lib.types import DatasetSplits, Split
+from lib.types import Property as Props
+from loguru import logger
 
 qcml_props = frozendict(
     {
@@ -23,12 +24,13 @@ def get_qcml_dataset(
     rank,
     data_dir,
     dataset_name,
-    splits={"train": "train", "val": "val", "test": "test"},
+    splits=None,
     dataset_version="1.0.0",
     copy_to_temp=False,
-):
-
-    data_path = os.path.join(data_dir, dataset_name, dataset_version)
+) -> DatasetSplits:
+    if splits is None:
+        splits = {"train": "train", "val": "val", "test": "test"}
+    data_path = Path(data_dir) / dataset_name / dataset_version
     splits = {Split[k]: v for k, v in splits.items()}
 
     if copy_to_temp:
@@ -37,7 +39,7 @@ def get_qcml_dataset(
         if rank == 0:
             import shutil
 
-            if not os.path.exists(data_path_temp):
+            if not data_path_temp.exists():
                 logger.info(f"Copying data to {data_path_temp} for faster I/O")
                 shutil.copytree(data_path, data_path_temp)
             else:
@@ -53,9 +55,7 @@ def get_qcml_dataset(
 
     builder = tfds.builder_from_directory(data_path)
 
-    datasets = {
-        k: builder.as_data_source(split=v, decoders=decoders) for k, v in splits.items()
-    }
+    datasets = {k: builder.as_data_source(split=v, decoders=decoders) for k, v in splits.items()}
 
     return DatasetSplits(
         splits=datasets,

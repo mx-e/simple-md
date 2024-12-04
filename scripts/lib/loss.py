@@ -1,11 +1,12 @@
-import torch as th
-import torch.nn.functional as F
-from torch import nn
-from lib.types import Property as Props
 from enum import Enum
 
+import torch as th
+import torch.nn.functional as F
+from lib.types import Property as Props
+from torch import nn
 
-def atom_weighted_forces_mae(pred_forces, true_forces, mask, reduction="mean"):
+
+def atom_weighted_forces_mae(pred_forces, true_forces, mask, reduction="mean") -> th.Tensor:
     assert reduction in ["mean", "none"], f"Invalid reduction {reduction}"
     diff = (pred_forces - true_forces) * mask  # (b, n, 3) / (n, 3)
     diff = diff.norm(dim=-1)  # (b, n) / (n,)
@@ -16,7 +17,7 @@ def atom_weighted_forces_mae(pred_forces, true_forces, mask, reduction="mean"):
     return diff.mean()
 
 
-def atom_weighted_forces_mse(pred_forces, true_forces, mask, reduction="mean"):
+def atom_weighted_forces_mse(pred_forces, true_forces, mask, reduction="mean") -> th.Tensor:
     assert reduction in ["mean", "none"], f"Invalid reduction {reduction}"
     diff = ((pred_forces - true_forces) ** 2) * mask  # (b, n, 3)
     diff = diff.sum(dim=-1)  # (b, n)
@@ -27,9 +28,7 @@ def atom_weighted_forces_mse(pred_forces, true_forces, mask, reduction="mean"):
     return diff.mean()
 
 
-def atom_weighted_forces_huber(
-    pred_forces, true_forces, mask, reduction="mean", delta=1.0
-):
+def atom_weighted_forces_huber(pred_forces, true_forces, mask, reduction="mean", delta=1.0) -> th.Tensor:
     assert reduction in ["mean", "none"], f"Invalid reduction {reduction}"
     diff = (pred_forces - true_forces) * mask  # (b, n, 3) / (n, 3)
     abs_diff = diff.abs()
@@ -53,14 +52,14 @@ class LossType(Enum):
     huber = "huber"
     rve = "rve"
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.value
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return self.value
 
     @classmethod
-    def _missing_(cls, value):
+    def _missing_(cls, value) -> "LossType":
         # This allows Property["energy"] to work the same as Property.energy
         for member in cls:
             if member.value == value:
@@ -106,14 +105,10 @@ class LossModule(nn.Module):
         loss_types: dict[str, str],
         weights: dict[str, float] | None = None,
         losses_per_atom: bool = False,
-    ):
+    ) -> None:
         super().__init__()
         self.targets = [Props[t] for t in targets]
-        self.weights = (
-            {Props[t]: w for t, w in weights.items()}
-            if weights
-            else {t: 1.0 for t in self.targets}
-        )
+        self.weights = {Props[t]: w for t, w in weights.items()} if weights else {t: 1.0 for t in self.targets}
         self.loss_types = {Props[t]: LossType[lt] for t, lt in loss_types.items()}
         self.losses_per_atom = losses_per_atom
         assert (
@@ -124,13 +119,11 @@ class LossModule(nn.Module):
             self.loss_funcs = {k: loss_funcs[k][v] for k, v in self.loss_types.items()}
             self.loss_funcs_val = {k: loss_funcs[k][LossType.mae] for k in self.targets}
         except KeyError as e:
-            raise ValueError(f"Loss function not defined for one or more targets: {e}")
+            raise ValueError(f"Loss function not defined for one or more targets: {e}") from e
 
-    def forward(self, predictions, inputs):
+    def forward(self, predictions, inputs) -> dict[str | Props, th.Tensor]:
         if Props.mask not in inputs:  # treat flat batch as a tall batch of size 1
-            assert (
-                self.energy_loss_type != "force_weighted"
-            ), "Force weighted loss not implemented for flat batches"
+            assert self.energy_loss_type != "force_weighted", "Force weighted loss not implemented for flat batches"
             mask = th.ones(
                 1,
                 predictions[Props.forces].shape[0],
@@ -145,19 +138,16 @@ class LossModule(nn.Module):
 
         losses = {}
         for loss_prop in self.targets:
-            loss_func = (
-                self.loss_funcs[loss_prop]
-                if self.training
-                else self.loss_funcs_val[loss_prop]
-            )
+            loss_func = self.loss_funcs[loss_prop] if self.training else self.loss_funcs_val[loss_prop]
             reduction = "none" if self.losses_per_atom and not self.training else "mean"
             # handle atomref targets
             loss_dict_prop = loss_prop
+            loss_comparison_prop = loss_prop
             if loss_prop in atomref_val_targets and not self.training:
-                loss_prop = atomref_val_targets[loss_prop]
+                loss_comparison_prop = atomref_val_targets[loss_prop]
 
             losses[loss_dict_prop] = loss_func(
-                predictions[loss_prop], inputs[loss_prop], mask, reduction=reduction
+                predictions[loss_comparison_prop], inputs[loss_comparison_prop], mask, reduction=reduction
             )
 
         if self.losses_per_atom:

@@ -1,30 +1,29 @@
 #! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data /home/maxi/MOLECULAR_ML/5_refactored_repo/container.sif python
-from loguru import logger
-from torch.utils.data import DataLoader
-from functools import partial
-from tqdm import tqdm
-from torch import multiprocessing as mp
 import itertools
-
-from pprint import pformat
-from hydra_zen import instantiate, load_from_yaml, builds
-import matplotlib.pyplot as plt
-import torch.nn as nn
-
+from functools import partial
 from pathlib import Path
-import torch as th
-import yaml, os
+from pprint import pformat
+from typing import Literal
 
-from lib.types import Property as Props, Split, DatasetSplits
-from lib.utils.helpers import export_xyz
-from lib.datasets import get_qcml_dataset
-from lib.utils.helpers import get_hydra_output_dir
-from lib.utils.dist import setup_device
-from lib.utils.run import run
+import matplotlib.pyplot as plt
+import torch as th
+import yaml
 from conf.base_conf import BaseConfig, configure_main
-from lib.utils.checkpoint import load_checkpoint
+from hydra_zen import builds, instantiate, load_from_yaml
 from lib.data.loaders import collate_fn
-from lib.data.transforms import center_positions_on_centroid, augment_positions
+from lib.data.transforms import augment_positions, center_positions_on_centroid
+from lib.datasets import get_qcml_dataset
+from lib.types import DatasetSplits, Split
+from lib.types import Property as Props
+from lib.utils.checkpoint import load_checkpoint
+from lib.utils.dist import get_amp, setup_device
+from lib.utils.helpers import export_xyz, get_hydra_output_dir
+from lib.utils.run import run
+from loguru import logger
+from torch import multiprocessing as mp
+from torch import nn
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 pbuilds = partial(builds, zen_partial=True)
 
@@ -39,7 +38,7 @@ qcml_data = pbuilds(
 
 @configure_main(extra_defaults=[])
 def main(
-    cfg: BaseConfig,
+    cfg: BaseConfig,  # noqa: ARG001
     model_run_dir: Path,
     checkpoint_name: str = "best_model",
     data=qcml_data,
@@ -52,9 +51,10 @@ def main(
     log_best_worst: int = 15,
     log_random: int = 15,
     log_uncertainty_performance_correlation: bool = True,
-):
+    ptdtype: Literal["float32", "float16", "bfloat16"] = "float32",
+) -> None:
     mp.set_start_method("spawn", force=True)
-    ctx, device = setup_device()
+    device, ctx = setup_device(), get_amp(ptdtype)
     config_path = model_run_dir / ".hydra" / "config.yaml"
     conf = load_from_yaml(config_path)
     model_conf = conf["train"]["model"]
@@ -95,7 +95,7 @@ def main(
     eval_results["equivariance"] = equivariance_results
 
     results_path = Path(job_dir) / "eval_results" / "results.yaml"
-    with open(results_path, "w") as f:
+    with results_path.open("w") as f:
         yaml.dump(eval_results, f)
     logger.info(f"Results saved to {results_path}")
 
@@ -116,10 +116,8 @@ def evaluate_equivariance(
     log_best_worst: int,
     log_random: int,
     log_uncertainty_performance_correlation: bool,
-):
-    assert (
-        batch_size % n_random_transforms == 0
-    ), "batch_size must be divisible by n_random_transforms"
+) -> dict:
+    assert batch_size % n_random_transforms == 0, "batch_size must be divisible by n_random_transforms"
     batch_size = batch_size // n_random_transforms
     prebatch_preprocessors = [center_positions_on_centroid]
     postbatch_preprocessors = [
@@ -150,16 +148,10 @@ def evaluate_equivariance(
         with ctx:
             _, losses = model(batch)
         conformer_data.append({k: v[::n_random_transforms] for k, v in batch.items()})
-        conformer_force_losses.append(
-            losses[Props.forces].view(-1, n_random_transforms)
-        )
-    conformer_force_losses = th.cat(
-        conformer_force_losses, dim=0
-    )  # (n, n_random_transforms)
+        conformer_force_losses.append(losses[Props.forces].view(-1, n_random_transforms))
+    conformer_force_losses = th.cat(conformer_force_losses, dim=0)  # (n, n_random_transforms)
     conformer_data = [
-        {k: v[i] for k, v in conf_data.items()}
-        for conf_data in conformer_data
-        for i in range(batch_size)
+        {k: v[i] for k, v in conf_data.items()} for conf_data in conformer_data for i in range(batch_size)
     ]
 
     conformer_force_losses_mean = conformer_force_losses.mean(dim=1)
@@ -176,9 +168,7 @@ def evaluate_equivariance(
     if log_uncertainty_performance_correlation:
         # plot x-axis: conformer_force_losses_mean, y-axis: equivariance_std
         fig, ax = plt.subplots(figsize=(5, 5))
-        ax.scatter(
-            conformer_force_losses_mean.cpu(), equivariance_std.cpu(), alpha=0.2, s=5
-        )
+        ax.scatter(conformer_force_losses_mean.cpu(), equivariance_std.cpu(), alpha=0.2, s=5)
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_xlabel("Conformer force loss mean")
@@ -196,22 +186,22 @@ def evaluate_equivariance(
         ## save conformers
 
         export_dir = Path(job_dir) / "eval_results" / "best_worst_equivariance"
-        os.makedirs(export_dir, exist_ok=True)
-        for i, data in enumerate(best_conformer_data):
+        export_dir.mkdir(exist_ok=True)
+        for i, conf in enumerate(best_conformer_data):
             export_xyz(
-                data,
+                conf,
                 export_dir,
                 f"best_conformer_{i}",
             )
-            plot_invariance(model, data, ctx, export_dir, f"best_conformer_{i}")
+            plot_invariance(model, conf, ctx, export_dir, f"best_conformer_{i}")
 
-        for i, data in enumerate(worst_conformer_data):
+        for i, conf in enumerate(worst_conformer_data):
             export_xyz(
-                data,
+                conf,
                 export_dir,
                 f"worst_conformer_{i}",
             )
-            plot_invariance(model, data, ctx, export_dir, f"worst_conformer_{i}")
+            plot_invariance(model, conf, ctx, export_dir, f"worst_conformer_{i}")
     if log_best_worst > 0:
         sorted_args = conformer_force_losses_mean.argsort()
         best_conformers_idx = sorted_args[:log_best_worst]
@@ -221,50 +211,50 @@ def evaluate_equivariance(
 
         ## save conformers
         export_dir = Path(job_dir) / "eval_results" / "best_worst"
-        os.makedirs(export_dir, exist_ok=True)
-        for i, data in enumerate(best_conformer_data):
+        export_dir.mkdir(exist_ok=True)
+        for i, conf in enumerate(best_conformer_data):
             export_xyz(
-                data,
+                conf,
                 export_dir,
                 f"best_conformer_{i}",
             )
-            plot_invariance(model, data, ctx, export_dir, f"best_conformer_{i}")
-        for i, data in enumerate(worst_conformer_data):
+            plot_invariance(model, conf, ctx, export_dir, f"best_conformer_{i}")
+        for i, conf in enumerate(worst_conformer_data):
             export_xyz(
-                data,
+                conf,
                 export_dir,
                 f"worst_conformer_{i}",
             )
-            plot_invariance(model, data, ctx, export_dir, f"worst_conformer_{i}")
+            plot_invariance(model, conf, ctx, export_dir, f"worst_conformer_{i}")
     if log_random > 0:
         random_idx = th.randint(0, len(conformer_data), (log_random,))
         random_conformer_data = [conformer_data[i] for i in random_idx]
         export_dir = Path(job_dir) / "eval_results" / "random"
-        os.makedirs(export_dir, exist_ok=True)
-        for i, data in enumerate(random_conformer_data):
+        export_dir.mkdir(exist_ok=True)
+        for i, conf in enumerate(random_conformer_data):
             export_xyz(
-                data,
+                conf,
                 export_dir,
                 f"random_conformer_{i}",
             )
-            plot_invariance(model, data, ctx, export_dir, f"random_conformer_{i}")
+            plot_invariance(model, conf, ctx, export_dir, f"random_conformer_{i}")
 
     return equivariance_results
 
 
 class Predictor(nn.Module):
-    def __init__(self, encoder, loss_module):
+    def __init__(self, encoder, loss_module) -> None:
         super().__init__()
         self.encoder = encoder
         self.loss_module = loss_module
 
-    def forward(self, inputs):
+    def forward(self, inputs) -> tuple:
         out = self.encoder(inputs)
         loss = self.loss_module(out, inputs)
         return out, loss
 
 
-def get_rotation_from_axis_angle(axis, angle):
+def get_rotation_from_axis_angle(axis, angle) -> th.Tensor:
     assert axis.shape[-1] == 3, "Axis should have shape (batch_dim, 3)"
     assert axis.shape[0] == angle.shape[0], "Batch dimensions should match"
     batch_dim = axis.shape[0]
@@ -287,43 +277,30 @@ def get_rotation_from_axis_angle(axis, angle):
         dim=-2,
     )  # (n, 3, 3)
     outer_product = th.bmm(axis.unsqueeze(2), axis.unsqueeze(1))  # (n, 3, 3)
-    identity = (
-        th.eye(3, device=axis.device).unsqueeze(0).expand(batch_dim, -1, -1)
-    )  # (n, 3, 3)
-    rotation_matrices = (
-        cos_theta * identity + sin_theta * K + (1 - cos_theta) * outer_product
-    )  # (n, 3, 3)
+    identity = th.eye(3, device=axis.device).unsqueeze(0).expand(batch_dim, -1, -1)  # (n, 3, 3)
+    rotation_matrices = cos_theta * identity + sin_theta * K + (1 - cos_theta) * outer_product  # (n, 3, 3)
     return rotation_matrices
 
 
 @th.no_grad()
-def plot_invariance(model, data, ctx, export_dir, export_name):
+def plot_invariance(model, data, ctx, export_dir, export_name) -> Path:
     axes = th.tensor(
         [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
         device=data[Props.positions].device,
         dtype=th.float32,
     )
     n_interploations = 120
-    angles = th.linspace(
-        0, 2 * th.pi, n_interploations, device=data[Props.positions].device
-    )  # (n_interploations,)
+    angles = th.linspace(0, 2 * th.pi, n_interploations, device=data[Props.positions].device)  # (n_interploations,)
     axes = axes.repeat_interleave(n_interploations, dim=0)  # (3 * n_interploations, 3)
     angles = angles.repeat(3)  # (3 * n_interploations,)
     R = get_rotation_from_axis_angle(axes, angles)  # (3 * n_interploations, 3, 3)
-    data = {
-        k: v.unsqueeze(0).repeat(n_interploations * 3, *(len(v.shape) * [1]))
-        for k, v in data.items()
-    }
-    data[Props.positions] = th.einsum(
-        "bij,bnj->bni", R, data[Props.positions]
-    )  # (3 * n_interploations, s, 3)
+    data = {k: v.unsqueeze(0).repeat(n_interploations * 3, *(len(v.shape) * [1])) for k, v in data.items()}
+    data[Props.positions] = th.einsum("bij,bnj->bni", R, data[Props.positions])  # (3 * n_interploations, s, 3)
     data[Props.forces] = th.einsum("bij,bnj->bni", R, data[Props.forces])
     with ctx:
         _, losses = model(data)
 
-    loss_x, loss_y, loss_z = (
-        losses[Props.forces].cpu().chunk(3, dim=0)
-    )  # (n_interploations,) * 3
+    loss_x, loss_y, loss_z = losses[Props.forces].cpu().chunk(3, dim=0)  # (n_interploations,) * 3
     angles = angles.cpu().numpy()
 
     export_path = export_dir / f"{export_name}_rotation_loss.png"

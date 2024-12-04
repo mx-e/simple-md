@@ -1,12 +1,10 @@
-from functools import wraps
 from enum import Enum
+from functools import wraps
 
 import torch as th
 from ase import Atoms
 from ase.neighborlist import neighbor_list
-
 from lib.types import Property, property_dtype
-
 from loguru import logger
 
 
@@ -17,16 +15,16 @@ class Transform(Enum):
     augment_positions = "augment_positions"
 
 
-def _apply_molwise_func(batch, func, new_props, **kwargs):
+def _apply_molwise_func(batch, func, new_props, **kwargs) -> tuple[dict, list]:
     for _, sample in enumerate(batch):
         sample.update(func(sample, **kwargs))
     return batch, new_props
 
 
-def apply_molwise(new_props):
-    def create_wrapper(func):
+def apply_molwise(new_props) -> callable:
+    def create_wrapper(func) -> callable:
         @wraps(func)
-        def wrapper(batch, **kwargs):
+        def wrapper(batch, **kwargs) -> tuple[dict, list]:
             return _apply_molwise_func(batch, func, new_props, **kwargs)
 
         # needed for multiprocessing
@@ -39,7 +37,7 @@ def apply_molwise(new_props):
 
 
 @apply_molwise(new_props=[])
-def center_positions_on_centroid(mol):
+def center_positions_on_centroid(mol) -> dict:
     positions = mol[Property.positions]  # (n_atoms, 3)
     centroids = (positions).mean(dim=0, keepdim=True)
     new_positions = positions - centroids
@@ -49,7 +47,7 @@ def center_positions_on_centroid(mol):
 @apply_molwise(
     new_props=[Property.i_idx, Property.j_idx],
 )
-def compute_neigbourhoods(mol, cutoff):
+def compute_neigbourhoods(mol, cutoff) -> dict:
     positions = mol[Property.positions]  # (n_atoms, 3)
     atomic_nums = mol[Property.atomic_numbers]  # (n_atoms,)
     at = Atoms(atomic_nums, positions, pbc=False)
@@ -60,7 +58,7 @@ def compute_neigbourhoods(mol, cutoff):
     }
 
 
-def dynamic_batch_size(batch, cutoff=30):
+def dynamic_batch_size(batch, cutoff=30) -> dict:
     batch_size, n_atoms = batch[Property.mask].shape
     cost = n_atoms**3 / cutoff**3
     if cost > 1:
@@ -79,7 +77,7 @@ def augment_positions(
     augmentation_mult=1,
     random_rotation=False,
     random_reflection=False,
-):
+) -> dict:
     if augmentation_mult <= 1:
         return batch
     for k, v in batch.items():
@@ -103,7 +101,7 @@ def augment_positions(
     return batch
 
 
-def get_random_rotations(n_samples, device):
+def get_random_rotations(n_samples, device) -> th.Tensor:
     # Generate random points on the surface of a 4D hypersphere
     u1, u2, u3 = th.rand(n_samples, 3).chunk(3, dim=1)  # (n_samples, 1)
 
@@ -131,14 +129,12 @@ def get_random_rotations(n_samples, device):
             aa - bb - cc + dd,
         ],
         dim=-1,
-    ).reshape(
-        n_samples, 3, 3
-    )  # (n_samples, 3, 3)
+    ).reshape(n_samples, 3, 3)  # (n_samples, 3, 3)
 
     return R.to(device)
 
 
-def get_random_reflections(n_samples, device, reflection_share=0.5, eps=1e-9):
+def get_random_reflections(n_samples, device, reflection_share=0.5, eps=1e-9) -> th.Tensor:
     # get random normal vectors
     normals = th.randn(n_samples, 3).to(device)  # (n_samples, 3)
     normals = normals / (th.norm(normals, dim=1, keepdim=True) + eps)  # (n_samples, 3)
@@ -146,9 +142,7 @@ def get_random_reflections(n_samples, device, reflection_share=0.5, eps=1e-9):
     # get householder matrix
     normals = normals.unsqueeze(2)
     outer = th.matmul(normals, normals.transpose(1, 2))  # (n_samples, 3, 3)
-    identity = th.eye(3, dtype=normals.dtype, device=normals.device).unsqueeze(
-        0
-    )  # (1, 3, 3)
+    identity = th.eye(3, dtype=normals.dtype, device=normals.device).unsqueeze(0)  # (1, 3, 3)
     householder = identity.repeat(n_samples, 1, 1)  # (n_samples, 3, 3)
     # selectively reflect
     sample_mask = th.rand(n_samples) < reflection_share

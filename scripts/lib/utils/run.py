@@ -1,15 +1,16 @@
+import sys
 from collections.abc import Callable
-from functools import partial
-import socket, sys
+from typing import TYPE_CHECKING
 
 from hydra_zen import MISSING, instantiate, store, zen
+from lib.utils.helpers import get_hydra_output_dir, seed_everything
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
-import torch as th
+
 import wandb
 
-from lib.utils.helpers import get_hydra_output_dir, seed_everything
-from lib.utils.wandb import WandBRun
+if TYPE_CHECKING:
+    from lib.utils.wandb import WandBRun
 
 
 def pre_call(root_config: DictConfig) -> None:
@@ -20,17 +21,14 @@ def pre_call(root_config: DictConfig) -> None:
         root_config: Unresolved config.
         log_debug: Whether to log the config, seed and output path.
     """
-    assert (
-        root_config is not None and root_config["cfg"] is not None
-    ), "Config must contain 'conf' at root-level."
+    assert root_config is not None, "Config must not be None."
+    assert root_config["cfg"] is not None, "Config must contain 'cfg' at root-level."
     config: DictConfig = root_config["cfg"]
-    assert (
-        "seed" in config
-        and "job" in config
-        and "wandb" in config
-        and "runtime" in config
-        and "loglevel" in config
-    ), "Do not edit the BaseConfig schema without updating the pre_call function."
+    assert "seed" in config, "Config must contain 'seed'."
+    assert "job" in config, "Config must contain 'job'."
+    assert "wandb" in config, "Config must contain 'wandb'."
+    assert "runtime" in config, "Config must contain 'runtime'."
+    assert "loglevel" in config, "Config must contain 'loglevel'."
     seed = config.get("seed", MISSING)
     job = config.get("job", MISSING)
     if job is not MISSING:

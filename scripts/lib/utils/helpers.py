@@ -4,11 +4,10 @@ from pathlib import Path
 
 import numpy as np
 import torch
-
-from hydra.core.hydra_config import HydraConfig
-from lib.types import Property as Props
 from ase import Atoms
 from ase.io import write
+from hydra.core.hydra_config import HydraConfig
+from lib.types import Property as Props
 
 
 def get_hydra_output_dir() -> Path:
@@ -23,7 +22,7 @@ def seed_everything(seed: int) -> None:
     os.environ["PYTHONHASHSEED"] = str(seed)
 
 
-def export_xyz(data, dir, filename):
+def export_xyz(data, path, filename) -> None:
     n_atoms = data[Props.mask].sum().long().cpu().item()
     positions = data[Props.positions][:n_atoms].cpu().numpy()
     ## convert to angstrom
@@ -32,6 +31,6 @@ def export_xyz(data, dir, filename):
 
     atoms = Atoms(numbers=atomic_numbers, positions=positions)
 
-    path = Path(dir) / (filename + ".xyz")
+    path = Path(path) / (filename + ".xyz")
     write(path, atoms, format="xyz")
     return path

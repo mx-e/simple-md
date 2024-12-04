@@ -1,9 +1,28 @@
 import math
+
 import torch as th
 from loguru import logger
 
 
-def get_lr_scheduler(optimizer, lr, scheduler_type: str, **kwargs):
+class LRScheduler:
+    def __init__(self, optimizer, lr) -> None:
+        self.optimizer = optimizer
+        self.lr = optimizer.param_groups[0]["lr"]
+        self.initial_lr = lr
+
+    def step(self, step: int) -> None:
+        pass
+
+    def step_on_loss(self, step, loss: float) -> None:
+        pass
+
+    def set_lr(self, lr: float) -> None:
+        self.lr = lr
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = lr
+
+
+def get_lr_scheduler(optimizer, lr, scheduler_type: str, **kwargs) -> LRScheduler:
     match scheduler_type:
         case "piecewise_linear":
             return PieceWiseLinearLRScheduler(optimizer, lr, **kwargs)
@@ -18,36 +37,16 @@ def get_lr_scheduler(optimizer, lr, scheduler_type: str, **kwargs):
             return LRScheduler(optimizer, **kwargs)
 
 
-class LRScheduler:
-    def __init__(self, optimizer, lr, **kwargs):
-        self.optimizer = optimizer
-        self.lr = optimizer.param_groups[0]["lr"]
-        self.initial_lr = lr
-
-    def step(self, step: int):
-        pass
-
-    def step_on_loss(self, step, loss: float):
-        pass
-
-    def set_lr(self, lr: float):
-        self.lr = lr
-        for param_group in self.optimizer.param_groups:
-            param_group["lr"] = lr
-
-
 class PieceWiseLinearLRScheduler(LRScheduler):
-    def __init__(self, optimizer, lr, milestones: list[tuple[int, float]], **kwargs):
+    def __init__(self, optimizer, lr, milestones: list[tuple[int, float]]) -> None:
         super().__init__(optimizer, lr)
         ## milestone in the format of (step, lr)
         milestones = sorted(milestones, key=lambda x: x[0])
         self.ms_steps = th.tensor([x[0] for x in milestones])
         self.ms_lr = th.tensor([x[1] for x in milestones])
-        assert (
-            self.ms_steps[1:] - self.ms_steps[:-1]
-        ).min() > 0, "Lr steps must be unique and ascending"
+        assert (self.ms_steps[1:] - self.ms_steps[:-1]).min() > 0, "Lr steps must be unique and ascending"
 
-    def step(self, step: int):
+    def step(self, step: int) -> None:
         if step <= self.ms_steps[0].item():
             lr = self.ms_lr[0].item()
         elif step >= self.ms_steps[-1].item():
@@ -57,9 +56,7 @@ class PieceWiseLinearLRScheduler(LRScheduler):
             left_step, right_step = self.ms_steps[idx - 1], self.ms_steps[idx]
             left_lr, right_lr = self.ms_lr[idx - 1], self.ms_lr[idx]
 
-            lr = left_lr + (right_lr - left_lr) * (step - left_step) / (
-                right_step - left_step
-            )
+            lr = left_lr + (right_lr - left_lr) * (step - left_step) / (right_step - left_step)
             lr = lr.item()
 
         self.set_lr(lr)
@@ -73,28 +70,25 @@ class CosineWithWarmupLRScheduler(LRScheduler):
         warmup_steps: int,
         lr_decay_steps: int,
         min_lr: float,
-        **kwargs,
-    ):
+    ) -> None:
         super().__init__(optimizer, lr)
         self.warmup_iters = warmup_steps
         self.lr_decay_iters = lr_decay_steps
         self.min_lr = min_lr
         self.current_step = 0
 
-    def step(self, step: int):
+    def step(self, step: int) -> None:
         self.current_step = step
         lr = self._get_lr(step)
         self.set_lr(lr)
 
-    def _get_lr(self, step: int):
+    def _get_lr(self, step: int) -> float:
         lr = self.initial_lr
         if step < self.warmup_iters:
             return lr * step / self.warmup_iters
         if step > self.lr_decay_iters:
             return self.min_lr
-        decay_ratio = (step - self.warmup_iters) / (
-            self.lr_decay_iters - self.warmup_iters
-        )
+        decay_ratio = (step - self.warmup_iters) / (self.lr_decay_iters - self.warmup_iters)
         assert 0 <= decay_ratio <= 1
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff ranges 0..1
         return self.min_lr + coeff * (lr - self.min_lr)
@@ -108,7 +102,6 @@ class AdaptiveAnnealingScheduler(LRScheduler):
         anneal_factor,
         min_lr,
         threshold=0.0,
-        **kwargs,
     ):
         super().__init__(optimizer)
         self.anneal_after_sideways_steps = anneal_after_sideways_steps
@@ -122,7 +115,7 @@ class AdaptiveAnnealingScheduler(LRScheduler):
         self.minimal_learning_rate = min_lr
         self.threshold = threshold
 
-    def step_on_loss(self, step, loss: float):
+    def step_on_loss(self, step, loss: float) -> None:
         # when called for the first time, just set the best losses to the current loss
         # important when loading a model and continuing training
         energy_loss = loss["energy_loss"]
@@ -148,25 +141,17 @@ class AdaptiveAnnealingScheduler(LRScheduler):
                 logger.info(f"Forces loss improved to {forces_loss}")
         # anneal if no improvement in either energy or forces
         elif (
-            min(
-                step - self.best_energy_loss_update, step - self.best_forces_loss_update
-            )
+            min(step - self.best_energy_loss_update, step - self.best_forces_loss_update)
             >= self.anneal_after_sideways_steps
         ):
             if self.current_lr * self.anneal_factor < self.minimal_learning_rate:
-                logger.info(f"Minimal learning rate reached, not annealing.")
+                logger.info("Minimal learning rate reached, not annealing.")
                 return
             if step - self.best_energy_loss_update >= self.anneal_after_sideways_steps:
-                logger.info(
-                    f"No improvement in energy loss for {step - self.best_energy_loss_update} steps."
-                )
+                logger.info(f"No improvement in energy loss for {step - self.best_energy_loss_update} steps.")
             if step - self.best_forces_loss_update >= self.anneal_after_sideways_steps:
-                logger.info(
-                    f"No improvement in forces loss for {step - self.best_forces_loss_update} steps."
-                )
-            logger.info(
-                f"Annealing LR from {self.current_lr} to {self.current_lr * self.anneal_factor}"
-            )
+                logger.info(f"No improvement in forces loss for {step - self.best_forces_loss_update} steps.")
+            logger.info(f"Annealing LR from {self.current_lr} to {self.current_lr * self.anneal_factor}")
             self.current_lr *= self.anneal_factor
             self.set_lr(self.current_lr)
             self.best_energy_loss = min(self.best_energy_loss, energy_loss)

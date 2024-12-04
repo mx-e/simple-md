@@ -3,10 +3,10 @@ from dataclasses import dataclass, fields
 from typing import Self
 
 from dotenv import load_dotenv
+from loguru import logger
+
 import wandb
 from wandb.wandb_run import Run
-
-from loguru import logger
 
 
 @dataclass
@@ -29,13 +29,9 @@ class WandBConfig:
         load_dotenv()
 
         try:
-            config = cls(
-                **{field.name: os.environ[field.name] for field in fields(cls)}
-            )
+            config = cls(**{field.name: os.environ[field.name] for field in fields(cls)})
         except KeyError:
-            logger.info(
-                "Could not load WandB config from environment variables or .env file."
-            )
+            logger.info("Could not load WandB config from environment variables or .env file.")
 
         return config
 

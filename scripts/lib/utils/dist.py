@@ -1,20 +1,18 @@
 import os
 from contextlib import nullcontext
-
-import torch.distributed as dist
-import torch as th
-
 from datetime import timedelta
+from typing import Literal
 
+import torch as th
+import torch.distributed as dist
 from loguru import logger
-import numpy as np
 
 
-def cleanup_dist():
+def cleanup_dist() -> None:
     dist.destroy_process_group()
 
 
-def setup_dist(rank, world_size, port="33281"):
+def setup_dist(rank, world_size, port="33281") -> None:
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = str(port)
     # initialize the process group
@@ -30,7 +28,7 @@ def setup_dist(rank, world_size, port="33281"):
     )
 
 
-def setup_device(rank=0):
+def setup_device(rank=0) -> th.device:
     th.backends.cuda.matmul.allow_tf32 = True
     th.backends.cudnn.allow_tf32 = True
 
@@ -42,22 +40,20 @@ def setup_device(rank=0):
 
     logger.info(f"Rank {rank} running 🚀, accelerator: {device}")
 
-    dtype = (
-        "bfloat16"
-        if th.cuda.is_available() and th.cuda.is_bf16_supported()
-        else "float16"
-    )
-    dtype = "float32"  # TODO: make configurable
-    logger.info(f"Data type: {dtype}")
+    return device
 
-    ptdtype = {
-        "float32": th.float32,
-        "bfloat16": th.bfloat16,
-        "float16": th.float16,
-    }[dtype]
-    if device.type == "cuda":
-        ctx = th.amp.autocast(device_type="cuda", dtype=ptdtype)
-    else:
-        # nullcontext
-        ctx = nullcontext()
-    return ctx, device
+
+ptd_name_to_type = {
+    "float32": th.float32,
+    "bfloat16": th.bfloat16,
+    "float16": th.float16,
+}
+
+
+def get_amp(ptdtype: Literal["float32", "bfloat16", "float16"]) -> nullcontext | th.amp.autocast:
+    if ptdtype == "bfloat16" and not th.cuda.is_bf16_supported():
+        raise ValueError("BF16 is not supported on this device")
+    logger.info(f"Casting to type: {ptdtype}")
+    ptdtype = ptd_name_to_type[ptdtype]
+    ctx = th.amp.autocast(device_type="cuda", dtype=ptdtype) if th.cuda.is_available() else nullcontext()
+    return ctx

@@ -4,15 +4,13 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
-import yaml
 
+import yaml
+from lib.utils.helpers import get_hydra_output_dir
+from lib.utils.wandb import WandBConfig
 from loguru import logger
 from submitit import AutoExecutor
 from submitit.helpers import CommandFunction
-
-from lib.utils.wandb import WandBConfig
-from lib.utils.helpers import get_hydra_output_dir
-
 
 partition_name_to_time_limit_hrs = {
     "cpu-2h": 2,
@@ -47,9 +45,7 @@ class SlurmConfig:
         params = {}
         if self.partition:
             params["slurm_partition"] = self.partition
-            params["timeout_min"] = (
-                partition_name_to_time_limit_hrs[self.partition] * MINS_IN_H
-            )
+            params["timeout_min"] = partition_name_to_time_limit_hrs[self.partition] * MINS_IN_H
 
         if self.cpus_per_task:
             params["cpus_per_task"] = self.cpus_per_task
@@ -87,7 +83,7 @@ class Job:
     slurm_config: SlurmConfig = field(default_factory=SlurmConfig)
     kwargs: dict = field(default_factory=dict)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.run()
         sys.exit(0)
 
@@ -100,7 +96,7 @@ class Job:
 
     def filter_args(self, args: list[str]) -> list[str]:
         """Filter args to prevent recursive jobs on the cluster."""
-        return [arg for arg in args if f"cfg/job" not in arg]
+        return [arg for arg in args if "cfg/job" not in arg]
 
     @property
     def python_command(self) -> str:
@@ -175,15 +171,10 @@ class SweepJob(Job):
 
     def run(self) -> None:
         """Run the sweep on the cluster."""
-        parameters = {
-            cfg_key: {"values": list(values)}
-            for cfg_key, values in self.parameters.items()
-        }
+        parameters = {cfg_key: {"values": list(values)} for cfg_key, values in self.parameters.items()}
         metric = {"goal": self.metric_goal, "name": self.metric_name}
         print(sys.argv)
-        program, args = self.get_absolute_program_path(sys.argv[0]), self.filter_args(
-            sys.argv[1:]
-        )
+        program, args = self.get_absolute_program_path(sys.argv[0]), self.filter_args(sys.argv[1:])
         command = [
             "${env}",
             "${interpreter}",

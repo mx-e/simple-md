@@ -1,23 +1,24 @@
-from enum import Enum
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Literal, Callable
+from enum import Enum
+from typing import Literal
 
-from frozendict import frozendict
 import torch as th
+from frozendict import frozendict
 from torch.utils.data import Dataset
 
 NODE_FEATURES_OFFSET = 128
 
 
 class Property(Enum):
-    def __str__(self):
+    def __str__(self) -> str:
         return self.value
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return self.value
 
     @classmethod
-    def _missing_(cls, value):
+    def _missing_(cls, value) -> "Property":
         # This allows Property["energy"] to work the same as Property.energy
         for member in cls:
             if member.value == value:
@@ -118,9 +119,7 @@ property_type = frozendict(
     }
 )
 
-edge_props_to_local_map = frozendict(
-    {Property.i_idx: Property.i_idx_local, Property.j_idx: Property.j_idx_local}
-)
+edge_props_to_local_map = frozendict({Property.i_idx: Property.i_idx_local, Property.j_idx: Property.j_idx_local})
 
 
 @dataclass
@@ -138,14 +137,14 @@ class Split(Enum):
     val = "val"
     test = "test"
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.value
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return self.value
 
     @classmethod
-    def _missing_(cls, value):
+    def _missing_(cls, value) -> "Split":
         # This allows Property["energy"] to work the same as Property.energy
         for member in cls:
             if member.value == value:
@@ -162,9 +161,7 @@ class DatasetSplits:
 
 @dataclass
 class PipelineConfig:
-    pre_collate_processors: list[Callable[[list[dict]], list[dict]]] = field(
-        default_factory=list
-    )
+    pre_collate_processors: list[Callable[[list[dict]], list[dict]]] = field(default_factory=list)
     pre_collate_processors_val: list[Callable[[list[dict]], list[dict]]] | None = None
     post_collate_processors: list[Callable[[dict], dict]] = field(default_factory=list)
     post_collate_processors_val: list[Callable[[dict], dict]] | None = None
@@ -172,7 +169,7 @@ class PipelineConfig:
     batch_size_impact: float = 1.0
     needed_props: list[Property] = field(default_factory=list)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.pre_collate_processors_val is None:
             self.pre_collate_processors_val = self.pre_collate_processors
         if self.post_collate_processors_val is None:

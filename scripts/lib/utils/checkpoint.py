@@ -1,7 +1,7 @@
 import torch as th
 
 
-def save_checkpoint(model, optimizer, step, path, ema=None):
+def save_checkpoint(model, optimizer, step, path, ema=None) -> None:
     ckpt = {
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
@@ -14,7 +14,7 @@ def save_checkpoint(model, optimizer, step, path, ema=None):
 
 def load_checkpoint(
     model, path, optimizer=None, ema=None, step_back=200
-):  # stepping back improves stability when using torch compile and mutliple GPUs (its unstable when starting directly with eval)
+) -> int:  # stepping back improves stability when using torch compile and mutliple GPUs (its unstable when starting directly with eval)
     device = next(model.parameters()).device
     checkpoint = th.load(path, weights_only=True, map_location=device)
     if hasattr(model, "module"):

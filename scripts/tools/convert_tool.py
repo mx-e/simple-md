@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse
+from copy import copy
+from pathlib import Path
+
 import torch as th
 import yaml
-from pathlib import Path
-from copy import copy
+from loguru import logger
 
 # Template for the new config format
 NEW_CONFIG_TEMPLATE = {
@@ -96,9 +98,9 @@ NEW_CONFIG_TEMPLATE = {
 }
 
 
-def convert_checkpoint(path_old_checkpoint: Path, new_checkpoint_dir: Path):
+def convert_checkpoint(path_old_checkpoint: Path, new_checkpoint_dir: Path) -> Path:
     """Convert a single checkpoint from the old format to the new format."""
-    print(f"Converting checkpoint: {path_old_checkpoint}")
+    logger.info(f"Converting checkpoint: {path_old_checkpoint}")
     model_dict_old = th.load(path_old_checkpoint, map_location="cpu")
     new_state_dict = {
         "optimizer_state_dict": model_dict_old["optimizer_state_dict"],
@@ -120,9 +122,7 @@ def convert_checkpoint(path_old_checkpoint: Path, new_checkpoint_dir: Path):
             if "forces" in k:
                 k_new = k.replace("regr_head.mlp_forces.", "heads.forces.mlp.")
             elif "energy" in k:
-                raise NotImplementedError(
-                    "Cannot convert models trained on energy loss"
-                )
+                raise NotImplementedError("Cannot convert models trained on energy loss")
             else:
                 k_new = k.replace("regr_head.", "heads.forces.")
             new_model_state_dict[k_new] = v
@@ -130,11 +130,11 @@ def convert_checkpoint(path_old_checkpoint: Path, new_checkpoint_dir: Path):
     new_state_dict["model_state_dict"] = new_model_state_dict
     new_ckpt_path = new_checkpoint_dir / path_old_checkpoint.name
     th.save(new_state_dict, new_ckpt_path)
-    print(f"Saved converted checkpoint to: {new_ckpt_path}")
+    logger.info(f"Saved converted checkpoint to: {new_ckpt_path}")
     return new_ckpt_path
 
 
-def transfer_config_values(config_old, config_new):
+def transfer_config_values(config_old, config_new) -> None:
     """Transfer values from old config format to new config format."""
     mdl_conf = config_new["train"]["model"]
     mdl_conf_old = config_old["model"]
@@ -169,10 +169,8 @@ def transfer_config_values(config_old, config_new):
     loss_conf["loss_types"] = {"forces": "mae"}
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Convert checkpoints from old to new format"
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Convert checkpoints from old to new format")
     parser.add_argument(
         "-i",
         "--old_checkpoint_dir",
@@ -208,7 +206,7 @@ def main():
     if not old_config_path.exists():
         raise FileNotFoundError(f"Config file not found: {old_config_path}")
 
-    with open(old_config_path, "r") as f:
+    with old_config_path.open("r") as f:
         config_old = yaml.safe_load(f)
 
     # Create new config based on template
@@ -220,11 +218,11 @@ def main():
     legacy_config_path = out_path_config / "config_legacy_format.yaml"
 
     # Save old config for reference
-    with open(legacy_config_path, "w") as f:
+    with legacy_config_path.open("w") as f:
         yaml.dump(config_old, f)
 
     # Save new config with header comment
-    with open(config_path, "w") as f:
+    with config_path.open("w") as f:
         f.write(
             "# This config was converted from a legacy format to be compatible with inference - "
             "only values needed for inference are accurate - for reproducing the training run "
@@ -235,17 +233,15 @@ def main():
     # Convert checkpoints
     checkpoint_files = list(old_ckpt_dir.glob("ckpts/*.pth"))
     if not checkpoint_files:
-        print("Warning: No checkpoint files found in input directory")
+        logger.info("Warning: No checkpoint files found in input directory")
 
     for ckpt_path in checkpoint_files:
         try:
             convert_checkpoint(ckpt_path, out_path_ckpts)
         except Exception as e:
-            print(f"Error converting checkpoint {ckpt_path}: {str(e)}")
+            logger.error(f"Error converting checkpoint {ckpt_path}: {str(e)}")
 
-    print(
-        f"\nConversion completed. Converted checkpoints and configs saved to: {output_dir}"
-    )
+    logger.info(f"\nConversion completed. Converted checkpoints and configs saved to: {output_dir}")
 
 
 if __name__ == "__main__":
