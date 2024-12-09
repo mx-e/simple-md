@@ -69,7 +69,8 @@ NEW_CONFIG_TEMPLATE = {
         "loss": {
             "_target_": "lib.loss.LossModule",
             "targets": ["forces"],
-            "loss_types": {"forces": "mae"},
+            "loss_types": {"forces": "euclidean"},
+            "metrics": {"forces": ["mae", "mse", "rmse", "euclidean"]},
         },
         "lr_scheduler": {
             "_target_": "lib.lr_scheduler.get_lr_scheduler",
@@ -239,7 +240,7 @@ def main() -> None:
         try:
             convert_checkpoint(ckpt_path, out_path_ckpts)
         except Exception as e:
-            logger.error(f"Error converting checkpoint {ckpt_path}: {str(e)}")
+            logger.error(f"Error converting checkpoint {ckpt_path}: {e!s}")
 
     logger.info(f"\nConversion completed. Converted checkpoints and configs saved to: {output_dir}")
 

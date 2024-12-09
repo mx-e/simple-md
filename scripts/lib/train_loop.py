@@ -10,15 +10,28 @@ from lib.types import Split
 from lib.utils.checkpoint import save_checkpoint
 from lib.utils.dist import get_amp
 from lib.utils.log import log_dict
+from lib.utils.wandb import WandBConfig
 from loguru import logger
 from torch import nn
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 
 
+class Predictor(nn.Module):
+    def __init__(self, encoder, loss_module) -> None:
+        super().__init__()
+        self.encoder = encoder
+        self.loss_module = loss_module
+
+    def forward(self, inputs) -> tuple[dict, dict]:
+        out = self.encoder(inputs)
+        loss = self.loss_module(out, inputs)
+        return out, loss
+
+
 def train_loop(
     rank: int,
-    model: nn.Module,
+    model: Predictor,
     loaders: dict[Split, DataLoader],
     optimizer: Optimizer,
     save_dir: Path,
@@ -31,7 +44,7 @@ def train_loop(
     save_interval: int = -1,
     lr_scheduler: LRScheduler = None,
     ema: EMAModel | None = None,
-    wandb=None,
+    wandb: WandBConfig | None = None,
     clip_grad: float = 1.0,
     ptdtype: Literal["float32", "bfloat16", "float16"] = "float32",
 ) -> None:
@@ -117,7 +130,7 @@ def train_loop(
                     save_dir / f"model_{real_step}.pth",
                     ema,
                 )
-        return model
+    return model
 
 
 def evaluate_loop(model, loader, ctx, ema, eval_samples) -> dict:

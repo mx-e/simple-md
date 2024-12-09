@@ -180,7 +180,7 @@ def add_graph_level_token(positions, atomic_numbers, mask) -> tuple[th.Tensor, t
 
 
 class PairEmbedding(nn.Module):
-    def __init__(self, embd_dim, num_3d_kernels, cls_token) -> None:
+    def __init__(self, embd_dim: int, num_3d_kernels: int, cls_token: int) -> None:
         super().__init__()
         self.num_3d_kernels = num_3d_kernels
         self.cls_token = cls_token
@@ -195,7 +195,7 @@ class PairEmbedding(nn.Module):
         nn.init.normal_(self.charge_embed.weight, mean=0.0, std=0.02)
 
         # pair features
-        self.m3d_embed = Gaussian3DEmbed(embd_dim, 2 * NODE_FEATURES_OFFSET + 1, self.num_3d_kernels)
+        self.m3d_embed = Gaussian3DEmbed(embd_dim, (2 * NODE_FEATURES_OFFSET + 1), self.num_3d_kernels)
         self.directional_embed = FourierDirectionalEmbed(embd_dim, num_kernel=128)
 
     def forward(self, inputs) -> tuple[th.Tensor, th.Tensor, th.Tensor]:
@@ -508,10 +508,11 @@ class NodeLevelRegressionHead(nn.Module):
                 if self.cls_token
                 else (h * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-9)  # (b,e)
             )
+
         elif self.target_type == PropertyType.atom_wise and self.cls_token:
             h = h[:, 1:, :]  # (b,n-1,e)
+            h = h * mask
 
-        h = h * mask
         return self.mlp(h)
 
 
@@ -695,11 +696,10 @@ class FourierDirectionalEmbed(nn.Module):
 
 
 class NonLinear(nn.Module):
-    def __init__(self, input_size, output_size, hidden=None) -> None:
+    def __init__(self, input_size: int, output_size: int, hidden=None) -> None:
         super().__init__()
-
         if hidden is None:
-            hidden = input
+            hidden = input_size
         self.layer1 = nn.Linear(input_size, hidden)
         self.layer2 = nn.Linear(hidden, output_size)
 
@@ -711,14 +711,10 @@ class NonLinear(nn.Module):
 
 
 class Gaussian3DEmbed(nn.Module):
-    def __init__(self, num_heads, num_edges, num_kernel) -> None:
+    def __init__(self, num_heads: int, num_edges: int, num_kernel: int) -> None:
         super().__init__()
-        self.num_heads = num_heads
-        self.num_edges = num_edges
-        self.num_kernel = num_kernel
-
-        self.gbf = GaussianLayer(self.num_kernel, num_edges)
-        self.gbf_proj = NonLinear(self.num_kernel, self.num_heads)
+        self.gbf = GaussianLayer(num_kernel, num_edges)
+        self.gbf_proj = NonLinear(num_kernel, num_heads)
 
     def forward(self, dist, node_type_edge) -> th.Tensor:
         edge_feature = self.gbf(dist, node_type_edge.long())  # (b, n, n, K)

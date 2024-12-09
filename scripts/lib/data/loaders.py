@@ -147,6 +147,7 @@ def collate_fn(
         props += new_props
 
     out = batch_func(batch, props, n_atoms)
+    out[Props.n_atoms] = n_atoms
     out = {k: v.to(device, non_blocking=True) for k, v in out.items()}
     for func in post_batch_preprocessors:
         out = func(out)

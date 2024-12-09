@@ -1,22 +1,25 @@
 #! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data /home/maxi/MOLECULAR_ML/5_refactored_repo/container.sif python
 from functools import partial
+from pathlib import Path
 
 import numpy as np
 import torch as th
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from conf.base_conf import BaseConfig, configure_main
-from hydra_zen import builds
+from hydra_zen import builds, instantiate, load_from_yaml
 from hydra_zen.typing import Partial
 from lib.data.loaders import get_loaders
 from lib.datasets import get_qcml_dataset
 from lib.ema import EMAModel
 from lib.loss import LossModule
-from lib.lr_scheduler import get_lr_scheduler
+from lib.lr_scheduler import LRScheduler, get_lr_scheduler
 from lib.models import PairEncoder, get_pair_encoder_pipeline_config
+from lib.models.pair_encoder import NodeLevelRegressionHead
 from lib.train_loop import Predictor, train_loop
 from lib.types import PipelineConfig
 from lib.types import Property as DatasetSplits
+from lib.types import Property as Props
 from lib.utils.checkpoint import load_checkpoint, save_checkpoint
 from lib.utils.dist import cleanup_dist, setup_device, setup_dist
 from lib.utils.helpers import get_hydra_output_dir
@@ -43,12 +46,15 @@ p_cosine_scheduler = pbuilds(
     warmup_steps=2000,
     min_lr=1e-7,
 )
-loss_module = builds(
+loss_module_forces = builds(
     LossModule,
     targets=["forces"],
-    loss_types={"forces": "mse"},
-    metrics={"forces": ["mae", "mse", "rmse", "euclidean", "huber"]},
-    compute_metrics_train=True,
+    loss_types={"forces": "mae"},
+)
+loss_module_dipole = builds(
+    LossModule,
+    targets=["dipole"],
+    loss_types={"dipole": "mae"},
 )
 pair_encoder_model = builds(
     PairEncoder,
@@ -83,7 +89,7 @@ qcml_data = pbuilds(
     dataset_version="1.0.0",
     copy_to_temp=True,
 )
-pretrain_loop = pbuilds(
+ft_loop = pbuilds(
     train_loop,
     log_interval=5,
     eval_interval=1000,
@@ -94,34 +100,44 @@ pretrain_loop = pbuilds(
 )
 
 
-def train(
+def finetune(
     rank: int,
     port: str,
     world_size: int,
     cfg: BaseConfig,
-    model: nn.Module = pair_encoder_model,
+    pretrain_model_dir: Path,
+    checkpoint_name: str = "best_model",
     data: DatasetSplits = qcml_data,
-    pipeline_conf: PipelineConfig = pair_encoder_data_config,
-    loss: LossModule = loss_module,
-    train_loop: Partial[callable] | None = pretrain_loop,
-    lr_scheduler: Partial[callable] | None = p_cosine_scheduler,
-    ema: Partial[EMAModel] | None = p_ema,
     optimizer: Partial[th.optim.Optimizer] = p_optim,
+    train_loop: Partial[callable] = ft_loop,
     batch_size: int = 256,
     total_steps: int = 200_000,
     lr: float = 5e-4,
     grad_accum_steps: int = 1,
-    checkpoint_path: str | None = None,
+    lr_scheduler: Partial[callable] | None = p_cosine_scheduler,  # None = No schedule
+    loss: LossModule | None = loss_module_dipole,  # None = Same as pretrain
+    pipeline_conf: PipelineConfig | None = pair_encoder_data_config,  # None = Same as pretrain
+    ema: Partial[EMAModel] | None = None,  # None = No EMA
 ) -> None:
     setup_dist(rank, world_size, port=port)
     try:
         device = setup_device(rank)
-        # model
+
+        # get model + loss + optim
+        config_path = pretrain_model_dir / ".hydra" / "config.yaml"
+        conf = load_from_yaml(config_path)
+        model_conf = conf["train"]["model"]
+        model = instantiate(model_conf)
+        if loss is None:
+            loss = instantiate(conf["train"]["loss"])
+        model = Predictor(model, loss).to(device)
         ddp_args = {
             "device_ids": ([rank] if cfg.runtime.device == "cuda" else None),
         }
-        model = Predictor(model, loss).to(device)
         model = DDP(model, **ddp_args)
+        checkpoint_path = pretrain_model_dir / "ckpts" / f"{checkpoint_name}.pth"
+        load_checkpoint(model.module.encoder, checkpoint_path)
+        dist.barrier()
         if ema is not None and rank == 0:
             ema = ema(model.module, device=device)
             logger.info(f"Using EMA with decay {ema.decay}")
@@ -130,9 +146,48 @@ def train(
         total_params = sum(p.numel() for p in model.parameters())
         logger.info(f"Total model parameters: {total_params}")
         optimizer = optimizer(model.parameters(), lr=lr)
+        lr_scheduler = (
+            lr_scheduler(optimizer, lr, lr_decay_steps=total_steps)
+            if lr_scheduler is not None
+            else LRScheduler(optimizer, lr)
+        )
 
-        # data
+        # handle cross-objective finetuning
+        loss_pretrain = instantiate(conf["train"]["loss"])
+        if loss_pretrain.targets != loss.targets:
+            logger.info(
+                f"Cross-objective finetuning detected: pretrain loss targets {loss_pretrain.targets} vs finetune loss targets {loss.targets}"
+            )
+            if not isinstance(model.module.encoder, PairEncoder):
+                raise ValueError("Cross-objective finetuning only supported for PairEncoder models")
+            logger.info(f"Modifying model to output {loss.targets} instead of {loss_pretrain.targets}")
+            current_heads = model.module.encoder.heads
+            new_heads = {target: head for target, head in current_heads.items() if target in loss.targets}
+            new_head_targets = [target for target in loss.targets if target not in loss_pretrain.targets]
+            for target in new_head_targets:
+                new_heads[str(target)] = NodeLevelRegressionHead(
+                    target=target,
+                    embd_dim=model_conf.embd_dim,
+                    cls_token=model_conf.cls_token,
+                    activation=model_conf.activation,
+                    head_dropout=model_conf.head_dropout,
+                    project_down=model_conf.head_project_down,
+                ).to(device)
+            model.module.encoder.heads = nn.ModuleDict(new_heads)
+            for target in new_head_targets:  # dataloading pipeline needs to get new targets
+                pipeline_conf.needed_props.append(target)
+            model = DDP(model.module, **ddp_args)  # rewrap model after modification
+
+        # data + loaders
         data = data(rank)
+        if pipeline_conf is None:
+            try:
+                pipeline_conf = instantiate(conf["train"]["pipeline_conf"])
+                logger.info("Loaded pipeline config from pretraining config")
+            except KeyError as e:
+                raise ValueError(
+                    "No pipeline config found in pretrain config - this might be an old checkpoint, please specify manually"
+                ) from e
         loaders = get_loaders(
             rank=rank,
             batch_size=batch_size,
@@ -142,21 +197,14 @@ def train(
             dataset_splits=data,
             pipeline_config=pipeline_conf,
         )
-        start_step = 0
-        if checkpoint_path is not None:
-            start_step = load_checkpoint(model, checkpoint_path, optimizer, ema)
-            dist.barrier()
-
-        lr_scheduler = lr_scheduler(optimizer, lr, lr_decay_steps=total_steps)  # init after checkpoint to load lr
-        save_dir = cfg.runtime.out_dir / "ckpts"
 
         final_model = train_loop(
             rank=rank,
             model=model,
             loaders=loaders,
             optimizer=optimizer,
-            save_dir=save_dir,
-            start_step=start_step,
+            save_dir=cfg.runtime.out_dir / "ckpts",
+            start_step=0,
             total_steps=total_steps,
             grad_accum_steps=grad_accum_steps,
             lr_scheduler=lr_scheduler,
@@ -168,21 +216,21 @@ def train(
             final_model.module.encoder,
             optimizer,
             total_steps,
-            save_dir / "model_final.pth",
+            cfg.runtime.out_dir / "ckpts" / "model_final.pth",
             ema,
         )
     finally:
         cleanup_dist()
 
 
-p_train_func = pbuilds_full(train)
+p_ft_func = pbuilds_full(finetune)
 
 
 @configure_main(extra_defaults=[])
 def main(
     cfg: BaseConfig,  # you must keep this argument
-    cfg_version: str = "1.1",  # noqa: ARG001 saving config version to track changes in signatures eg for finetuning
-    train: Partial[callable] = p_train_func,
+    pretrain_model_dir: str,
+    ft: Partial[callable] = p_ft_func,
 ) -> None:
     logger.info(f"Running with base config: {cfg}")
     mp.set_start_method("spawn", force=True)
@@ -193,13 +241,14 @@ def main(
 
     if world_size > 1:
         th.multiprocessing.spawn(
-            train,
+            ft,
             args=(random_port, world_size, cfg),
             nprocs=world_size,
             join=True,
+            pretrain_model_dir=Path(pretrain_model_dir),
         )
     else:
-        train(rank=0, port=random_port, world_size=1, cfg=cfg)
+        ft(rank=0, port=random_port, world_size=1, cfg=cfg, pretrain_model_dir=Path(pretrain_model_dir))
 
 
 if __name__ == "__main__":

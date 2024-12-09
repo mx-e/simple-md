@@ -16,6 +16,7 @@ qcml_props = frozendict(
         Props.atomic_numbers: "atomic_numbers",
         Props.forces: "pbe0_forces",
         Props.positions: "positions",
+        Props.dipole: "pbe0_dipole",
     }
 )
 

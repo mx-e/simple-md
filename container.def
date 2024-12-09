@@ -20,4 +20,4 @@ From: mx8e/cluster_python:3.12
     export PYTHONPATH=./src:$PYTHONPATH
 
 %post
-    poetry config virtualenvs.create false && poetry install --no-interaction --no-rootrebui
+    poetry config virtualenvs.create false && poetry install --no-interaction --no-root

@@ -85,6 +85,7 @@ def augment_positions(
 
     positions = batch[Property.positions]  # (n_batches, n_atoms, 3)
     forces = batch[Property.forces]  # (n_batches, n_atoms, 3)
+
     n_batches, _, _ = positions.size()
     if random_rotation:
         R = get_random_rotations(n_batches, positions.device)
@@ -95,6 +96,12 @@ def augment_positions(
         H = get_random_reflections(n_batches, positions.device, reflection_share=0.5)
         positions = th.bmm(positions, H)
         forces = th.bmm(forces, H)
+
+    if Property.dipole in batch:
+        dipole = batch[Property.dipole]
+        dipole = th.bmm(dipole.unsqueeze(1), R).squeeze(1)
+        dipole = th.bmm(dipole.unsqueeze(1), H).squeeze(1)
+        batch[Property.dipole] = dipole
 
     batch[Property.positions] = positions
     batch[Property.forces] = forces

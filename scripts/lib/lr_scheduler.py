@@ -102,7 +102,7 @@ class AdaptiveAnnealingScheduler(LRScheduler):
         anneal_factor,
         min_lr,
         threshold=0.0,
-    ):
+    ) -> None:
         super().__init__(optimizer)
         self.anneal_after_sideways_steps = anneal_after_sideways_steps
         self.anneal_factor = anneal_factor

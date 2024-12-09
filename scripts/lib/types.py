@@ -42,6 +42,7 @@ class Property(Enum):
     r_ij = "r_ij"
     i_idx_local = "i_idx_local"
     j_idx_local = "j_idx_local"
+    n_atoms = "n_atoms"
     _meta = "_meta"
 
 
@@ -71,6 +72,7 @@ property_dims = frozendict(
         Property.r_ij: 3,
         Property.i_idx_local: 1,
         Property.j_idx_local: 1,
+        Property.n_atoms: 1,
     }
 )
 
@@ -93,6 +95,7 @@ property_dtype = frozendict(
         Property.r_ij: th.float32,
         Property.i_idx_local: th.int64,
         Property.j_idx_local: th.int,
+        Property.n_atoms: th.int64,
     }
 )
 

@@ -13,6 +13,8 @@ from hydra_zen import builds, instantiate, load_from_yaml
 from lib.data.loaders import collate_fn
 from lib.data.transforms import augment_positions, center_positions_on_centroid
 from lib.datasets import get_qcml_dataset
+from lib.loss import LossModule
+from lib.train_loop import Predictor
 from lib.types import DatasetSplits, Split
 from lib.types import Property as Props
 from lib.utils.checkpoint import load_checkpoint
@@ -35,16 +37,26 @@ qcml_data = pbuilds(
     copy_to_temp=True,
 )
 
+loss_module = builds(
+    LossModule,
+    targets=["forces"],
+    loss_types={"forces": "mae"},
+    metrics={"forces": ["mae", "rmse", "euclidean", "huber", "mse"]},
+    losses_per_mol=True,
+)
+
 
 @configure_main(extra_defaults=[])
 def main(
     cfg: BaseConfig,  # noqa: ARG001
     model_run_dir: Path,
+    loss_module: LossModule | None = loss_module,
     checkpoint_name: str = "best_model",
     data=qcml_data,
     batch_size: int = 1024,
+    equivariance_metric: Literal["mse", "mae", "euclidean", "rmse", "huber"] = "euclidean",
     n_random_transforms: int = 128,
-    n_samples: int = 10000,
+    n_samples: int = 50000,
     reflections: bool = False,
     rotations: bool = True,
     log_best_worst_conformers: int = 15,
@@ -59,9 +71,10 @@ def main(
     conf = load_from_yaml(config_path)
     model_conf = conf["train"]["model"]
     model = instantiate(model_conf)
-    loss_module_conf = conf["train"]["loss"]
-    loss_module = instantiate(loss_module_conf)
-    loss_module.losses_per_atom = True
+    if loss_module is None:
+        loss_module_conf = conf["train"]["loss"]
+        loss_module = instantiate(loss_module_conf)
+        loss_module.losses_per_atom = True
 
     job_dir = get_hydra_output_dir()
     out_dir = job_dir / "eval_results"
@@ -75,12 +88,22 @@ def main(
     data = data(rank=0, copy_to_temp=False)
     # evaluation
 
+    evaluation_metrics = compute_metrics(
+        predictor,
+        data,
+        n_samples,
+        device,
+        ctx,
+    )
+    logger.info(f"Evaluation results:\n{pformat(evaluation_metrics)}")
+    eval_results["metrics"] = evaluation_metrics
     equivariance_results = evaluate_equivariance(
         predictor,
         data,
         job_dir,
         device,
         ctx,
+        metric=equivariance_metric,
         batch_size=batch_size,
         n_random_transforms=n_random_transforms,
         n_samples=n_samples,
@@ -101,12 +124,49 @@ def main(
 
 
 @th.no_grad()
+def compute_metrics(
+    model: nn.Module,
+    data: DatasetSplits,
+    num_samples: int,
+    device,
+    ctx,
+    batch_size: int = 1024,
+) -> dict:
+    prebatch_preprocessors = [center_positions_on_centroid]
+    loader = DataLoader(
+        data.splits[Split.test],
+        batch_size=1024,
+        collate_fn=partial(
+            collate_fn,
+            props=data.dataset_props,
+            device=device,
+            pre_batch_preprocessors=prebatch_preprocessors,
+            post_batch_preprocessors=[],
+        ),
+        shuffle=False,
+    )
+    steps = num_samples // batch_size
+    losses = []
+    for batch in tqdm(loader, total=steps):
+        if len(losses) >= steps:
+            break
+        with ctx:
+            _, losses_batch = model(batch)
+        losses.append(losses_batch)
+    loss_keys = losses[0].keys()
+    mean_losses = {k: th.cat([l[k] for l in losses], dim=0).mean().item() for k in loss_keys}
+    logger.info(f"Mean losses:\n{pformat(mean_losses)}")
+    return mean_losses
+
+
+@th.no_grad()
 def evaluate_equivariance(
     model: nn.Module,
     data: DatasetSplits,
     job_dir: Path,
     device,
     ctx,
+    metric: Literal["mse", "mae", "euclidean", "rmse", "huber"],
     batch_size: int,
     n_random_transforms: int,
     n_samples: int,
@@ -148,7 +208,7 @@ def evaluate_equivariance(
         with ctx:
             _, losses = model(batch)
         conformer_data.append({k: v[::n_random_transforms] for k, v in batch.items()})
-        conformer_force_losses.append(losses[Props.forces].view(-1, n_random_transforms))
+        conformer_force_losses.append(losses[f"forces_{metric!s}"].view(-1, n_random_transforms))
     conformer_force_losses = th.cat(conformer_force_losses, dim=0)  # (n, n_random_transforms)
     conformer_data = [
         {k: v[i] for k, v in conf_data.items()} for conf_data in conformer_data for i in range(batch_size)
@@ -171,7 +231,7 @@ def evaluate_equivariance(
         ax.scatter(conformer_force_losses_mean.cpu(), equivariance_std.cpu(), alpha=0.2, s=5)
         ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_xlabel("Conformer force loss mean")
+        ax.set_xlabel(f"Conformer force loss ({metric!s})")
         ax.set_ylabel("Equivariance std")
         plt.tight_layout()
         plt.savefig(Path(job_dir) / "eval_results" / "uncertainty_correlation.png")
@@ -240,18 +300,6 @@ def evaluate_equivariance(
             plot_invariance(model, conf, ctx, export_dir, f"random_conformer_{i}")
 
     return equivariance_results
-
-
-class Predictor(nn.Module):
-    def __init__(self, encoder, loss_module) -> None:
-        super().__init__()
-        self.encoder = encoder
-        self.loss_module = loss_module
-
-    def forward(self, inputs) -> tuple:
-        out = self.encoder(inputs)
-        loss = self.loss_module(out, inputs)
-        return out, loss
 
 
 def get_rotation_from_axis_angle(axis, angle) -> th.Tensor:

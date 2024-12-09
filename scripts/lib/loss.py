@@ -3,54 +3,27 @@ from enum import Enum
 import torch as th
 import torch.nn.functional as F
 from lib.types import Property as Props
+from lib.types import PropertyType, property_type
 from torch import nn
 
 
-def atom_weighted_forces_mae(pred_forces, true_forces, mask, reduction="mean") -> th.Tensor:
+def atom_wise_euclidean(pred_forces, true_forces, reduction="mean") -> th.Tensor:
     assert reduction in ["mean", "none"], f"Invalid reduction {reduction}"
-    diff = (pred_forces - true_forces) * mask  # (b, n, 3) / (n, 3)
-    diff = diff.norm(dim=-1)  # (b, n) / (n,)
-    mask = mask.squeeze(-1)  # (b, n) / (n,)
-    diff = diff.sum(dim=-1) / mask.sum(dim=1)  # (b,) / ()
+    diff = pred_forces - true_forces  # (n, 3)
+    diff = diff.norm(dim=-1)  # (n,)
     if reduction == "none":
         return diff
     return diff.mean()
-
-
-def atom_weighted_forces_mse(pred_forces, true_forces, mask, reduction="mean") -> th.Tensor:
-    assert reduction in ["mean", "none"], f"Invalid reduction {reduction}"
-    diff = ((pred_forces - true_forces) ** 2) * mask  # (b, n, 3)
-    diff = diff.sum(dim=-1)  # (b, n)
-    mask = mask.squeeze(-1)
-    diff = diff.sum(dim=1) / mask.sum(dim=1)
-    if reduction == "none":
-        return diff
-    return diff.mean()
-
-
-def atom_weighted_forces_huber(pred_forces, true_forces, mask, reduction="mean", delta=1.0) -> th.Tensor:
-    assert reduction in ["mean", "none"], f"Invalid reduction {reduction}"
-    diff = (pred_forces - true_forces) * mask  # (b, n, 3) / (n, 3)
-    abs_diff = diff.abs()
-
-    quadratic = th.min(abs_diff, th.full_like(abs_diff, delta))
-    linear = abs_diff - quadratic
-    losses = 0.5 * quadratic**2 + delta * linear
-
-    losses = losses.sum(dim=-1)  # (b, n)
-    mask = mask.squeeze(-1)
-    losses = losses.sum(dim=1) / mask.sum(dim=1)
-    if reduction == "none":
-        return losses
-    return losses.mean()
 
 
 class LossType(Enum):
     force_weighted = "force_weighted"
     mae = "mae"
+    euclidean = "euclidean"
     mse = "mse"
     huber = "huber"
     rve = "rve"
+    rmse = "rmse"
 
     def __str__(self) -> str:
         return self.value
@@ -67,22 +40,31 @@ class LossType(Enum):
         raise ValueError(f"'{value}' is not a valid {cls.__name__}")
 
 
+def rmse(pred, true, reduction="mean") -> th.Tensor:
+    return th.sqrt(F.mse_loss(pred, true, reduction=reduction))
+
+
 force_loss_funcs = {
-    LossType.mae: atom_weighted_forces_mae,
-    LossType.mse: atom_weighted_forces_mse,
-    LossType.huber: atom_weighted_forces_huber,
+    LossType.mae: F.l1_loss,
+    LossType.rmse: rmse,
+    LossType.euclidean: atom_wise_euclidean,
+    LossType.mse: F.mse_loss,
+    LossType.huber: F.smooth_l1_loss,
 }
 
 energy_loss_funcs = {
     LossType.mae: F.l1_loss,
     LossType.mse: F.mse_loss,
     LossType.huber: F.smooth_l1_loss,
+    LossType.rmse: rmse,
 }
 
 dipole_loss_funcs = {
     LossType.mae: F.l1_loss,
+    LossType.euclidean: atom_wise_euclidean,
     LossType.mse: F.mse_loss,
     LossType.huber: F.smooth_l1_loss,
+    LossType.rmse: rmse,
 }
 
 loss_funcs = {
@@ -98,60 +80,100 @@ atomref_val_targets = {
 }
 
 
+def unbatch(batched_tensor, mask) -> th.Tensor:
+    mask = mask.unsqueeze(-1).expand_as(batched_tensor)  # (b, n, 3)
+    unbatched_tensor = batched_tensor.masked_select(mask).view(-1, batched_tensor.shape[-1])  # (n', 3)
+    return unbatched_tensor
+
+
+def mean_losses_elementwise(unbatched_losses, mask) -> th.Tensor:
+    batch_size = mask.shape[0]  # (b, n)
+    n_dims = len(unbatched_losses.shape)
+    indices = th.repeat_interleave(
+        th.arange(batch_size, device=unbatched_losses.device),
+        mask.sum(dim=1),  # (b,)
+    )  # (n',)
+    indices = indices.unsqueeze(-1) if n_dims == 2 else indices
+    per_mol_loss = th.zeros((batch_size, 1) if n_dims == 2 else batch_size, device=unbatched_losses.device)  # (b,)
+    per_mol_loss.scatter_add_(dim=0, index=indices, src=unbatched_losses).squeeze()  # (b,)
+    return per_mol_loss / mask.sum(dim=1)  # (b,)
+
+
 class LossModule(nn.Module):
     def __init__(
         self,
         targets: list[str],
         loss_types: dict[str, str],
+        metrics: dict[str, list],
         weights: dict[str, float] | None = None,
-        losses_per_atom: bool = False,
+        losses_per_mol: bool = False,
+        compute_metrics_train: bool = False,
     ) -> None:
         super().__init__()
-        self.targets = [Props[t] for t in targets]
-        self.weights = {Props[t]: w for t, w in weights.items()} if weights else {t: 1.0 for t in self.targets}
-        self.loss_types = {Props[t]: LossType[lt] for t, lt in loss_types.items()}
-        self.losses_per_atom = losses_per_atom
+        # resolve types
+        self.targets = [Props[target] for target in targets]
+        self.weights = (
+            {Props[target]: w for target, w in weights.items()} if weights else {t: 1.0 for t in self.targets}
+        )
+        self.loss_types = {Props[target]: LossType[lt] for target, lt in loss_types.items()}
+        self.metrics = {Props[target]: [LossType[m] for m in metric_list] for target, metric_list in metrics.items()}
+
+        self.losses_per_mol = losses_per_mol
+        self.compute_metrics_train = compute_metrics_train
         assert (
-            len(self.targets) == len(self.weights) == len(self.loss_types)
+            len(self.targets) == len(self.weights) == len(loss_types)
         ), "For each target, a loss weight and a loss type must be configured"
 
         try:
-            self.loss_funcs = {k: loss_funcs[k][v] for k, v in self.loss_types.items()}
-            self.loss_funcs_val = {k: loss_funcs[k][LossType.mae] for k in self.targets}
+            self.loss_funcs = {target: {lt: loss_funcs[target][lt]} for target, lt in self.loss_types.items()}
+            self.metric_funcs = {
+                target: {metric: loss_funcs[target][metric] for metric in metric_list}
+                for target, metric_list in self.metrics.items()
+            }
         except KeyError as e:
-            raise ValueError(f"Loss function not defined for one or more targets: {e}") from e
+            raise ValueError(f"Metric function not defined for one or more targets: {e}") from e
+        self.loss_funcs_val = {target: self.loss_funcs[target] | self.metric_funcs[target] for target in self.targets}
 
     def forward(self, predictions, inputs) -> dict[str | Props, th.Tensor]:
-        if Props.mask not in inputs:  # treat flat batch as a tall batch of size 1
-            assert self.energy_loss_type != "force_weighted", "Force weighted loss not implemented for flat batches"
-            mask = th.ones(
-                1,
-                predictions[Props.forces].shape[0],
-                1,
-                device=predictions[Props.forces].device,
-            )
-            if Props.forces in predictions:
-                predictions[Props.forces].unsqueeze_(0)
-                inputs[Props.forces].unsqueeze_(0)
-        else:
-            mask = inputs[Props.mask].unsqueeze(-1)
-
         losses = {}
+
         for loss_prop in self.targets:
-            loss_func = self.loss_funcs[loss_prop] if self.training else self.loss_funcs_val[loss_prop]
-            reduction = "none" if self.losses_per_atom and not self.training else "mean"
-            # handle atomref targets
-            loss_dict_prop = loss_prop
-            loss_comparison_prop = loss_prop
-            if loss_prop in atomref_val_targets and not self.training:
-                loss_comparison_prop = atomref_val_targets[loss_prop]
-
-            losses[loss_dict_prop] = loss_func(
-                predictions[loss_comparison_prop], inputs[loss_comparison_prop], mask, reduction=reduction
+            loss_funcs = (
+                self.loss_funcs_val[loss_prop]
+                if not self.training or self.compute_metrics_train
+                else self.loss_funcs[loss_prop]
             )
-
-        if self.losses_per_atom:
+            for loss_type, loss_func in loss_funcs.items():
+                loss_dict_key = f"{loss_prop!s}_{loss_type!s}"
+                losses[loss_dict_key] = self.compute_metric(predictions, inputs, loss_prop, loss_func)
+        if self.losses_per_mol:
             return losses
-        weighted_losses = {k: v * self.weights[k] for k, v in losses.items()}
-        losses["total"] = sum(weighted_losses.values())
+        weighted_train_losses = {
+            target: losses[f"{target!s}_{loss_func!s}"] * self.weights[target]
+            for target, loss_func in self.loss_types.items()
+        }
+        losses["total"] = sum(weighted_train_losses.values())
         return losses
+
+    def compute_metric(self, predictions, inputs, loss_prop, loss_func) -> th.Tensor:
+        loss_comparison_prop = loss_prop
+        # handle atomref targets
+        if loss_prop in atomref_val_targets and not self.training:
+            loss_comparison_prop = atomref_val_targets[loss_prop]
+        reduction = "none" if self.losses_per_mol and not self.training else "mean"
+
+        if property_type[loss_prop] == PropertyType.mol_wise:
+            return loss_func(predictions[loss_comparison_prop], inputs[loss_comparison_prop], reduction=reduction)
+        else:
+            # unbatch atom wise properties and remove padding
+            pred = predictions[loss_comparison_prop]
+            target = inputs[loss_comparison_prop]
+            is_batched = Props.mask in inputs
+            if is_batched:
+                pred = unbatch(pred, inputs[Props.mask])
+                target = unbatch(target, inputs[Props.mask])
+            loss = loss_func(pred, target, reduction=reduction)
+            # mean losses per molecule if requested
+            if not self.losses_per_mol:
+                return loss
+            return mean_losses_elementwise(loss, inputs[Props.mask])
