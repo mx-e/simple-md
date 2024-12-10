@@ -70,6 +70,7 @@ def train_loop(
                 logger.info(f"Epoch {epoch}")
                 batch = next(train_iter)
             out, losses = model(batch)
+            print(out, losses)
             loss = losses["total"]
             loss /= grad_accum_steps
         loss.backward()

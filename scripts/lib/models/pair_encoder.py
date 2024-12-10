@@ -5,8 +5,8 @@ from typing import Literal
 import torch as th
 from lib.data.transforms import (
     augment_positions,
-    center_positions_on_centroid,
     center_positions_on_center_of_mass,
+    center_positions_on_centroid,
     dynamic_batch_size,
 )
 from lib.types import PipelineConfig, PropertyType, property_dims, property_type
@@ -76,7 +76,7 @@ class PairEncoder(nn.Module):
         ffn_dropout: float,
         head_dropout: float,
         norm_first: bool,
-        norm: str,
+        norm: Literal["batch", "layer"],
         decomposer_type: Literal["pooling", "diagonal"],
         target_heads: list[str],
         head_project_down: bool,

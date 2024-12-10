@@ -5,7 +5,8 @@ import torch as th
 from ase import Atoms
 from ase.data import atomic_masses
 from ase.neighborlist import neighbor_list
-from lib.types import Property as Props, Props_dtype
+from lib.types import Property as Props
+from lib.types import property_dtype
 from loguru import logger
 
 
@@ -48,7 +49,7 @@ def center_positions_on_centroid(mol) -> dict:
 @apply_molwise(new_props=[])
 def center_positions_on_center_of_mass(mol) -> dict:
     masses = th.tensor(atomic_masses[mol[Props.atomic_numbers]], dtype=th.float32)
-    com = (masses.unsqueeze(-1) * mol[Props.position]).sum(0) / masses.sum()
+    com = (masses.unsqueeze(-1) * mol[Props.positions]).sum(0) / masses.sum()
     return {Props.positions: mol[Props.positions] - com}
 
 
@@ -61,8 +62,8 @@ def compute_neigbourhoods(mol, cutoff) -> dict:
     at = Atoms(atomic_nums, positions, pbc=False)
     idx_i, idx_j = neighbor_list("ij", at, cutoff)
     return {
-        Props.i_idx: th.tensor(idx_i, dtype=Props_dtype[Props.i_idx]),
-        Props.j_idx: th.tensor(idx_j, dtype=Props_dtype[Props.j_idx]),
+        Props.i_idx: th.tensor(idx_i, dtype=property_dtype[Props.i_idx]),
+        Props.j_idx: th.tensor(idx_j, dtype=property_dtype[Props.j_idx]),
     }
 
 

@@ -73,7 +73,7 @@ pair_encoder_model = builds(
     norm_first=True,
     norm="layer",
     decomposer_type="pooling",
-    target_heads=["dipole"],
+    target_heads=["forces"],
     head_project_down=True,
     compose_dipole_from_charges=False,
 )
@@ -112,7 +112,7 @@ def train(
     model: nn.Module = pair_encoder_model,
     data: DatasetSplits = qcml_data,
     pipeline_conf: PipelineConfig = pair_encoder_data_config,
-    loss: LossModule = loss_module_dipole,
+    loss: LossModule = loss_module_forces,
     train_loop: Partial[callable] | None = pretrain_loop,
     lr_scheduler: Partial[callable] | None = p_cosine_scheduler,
     ema: Partial[EMAModel] | None = p_ema,
@@ -130,8 +130,8 @@ def train(
         ddp_args = {
             "device_ids": ([rank] if cfg.runtime.device == "cuda" else None),
         }
-        model = Predictor(model, loss).to(device)
-        model = DDP(model, **ddp_args)
+        predictor = Predictor(model, loss).to(device)
+        model = DDP(predictor, **ddp_args)
         if ema is not None and rank == 0:
             ema = ema(model.module, device=device)
             logger.info(f"Using EMA with decay {ema.decay}")
@@ -154,7 +154,8 @@ def train(
         )
         start_step = 0
         if checkpoint_path is not None:
-            start_step = load_checkpoint(model, checkpoint_path, optimizer, ema)
+            start_step = load_checkpoint(predictor.encoder, checkpoint_path, optimizer, ema)
+            model = DDP(predictor, **ddp_args)
             dist.barrier()
 
         lr_scheduler = lr_scheduler(optimizer, lr, lr_decay_steps=total_steps)  # init after checkpoint to load lr
