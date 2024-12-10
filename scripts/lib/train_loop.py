@@ -100,7 +100,7 @@ def train_loop(
                     val_loss,
                     real_step - 1,
                     log_wandb=wandb,
-                    key_suffix=f"_mae_{Split.val}",
+                    key_suffix=f"_{Split.val}",
                 )
 
                 if best_val is None or val_loss["total"] < best_val:
@@ -117,7 +117,7 @@ def train_loop(
                         test_loss,
                         real_step - 1,
                         log_wandb=wandb,
-                        key_suffix=f"_mae_{Split.test}",
+                        key_suffix=f"_{Split.test}",
                     )
                 train_loss = 0.0
 

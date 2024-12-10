@@ -3,8 +3,9 @@ from functools import wraps
 
 import torch as th
 from ase import Atoms
+from ase.data import atomic_masses
 from ase.neighborlist import neighbor_list
-from lib.types import Property, property_dtype
+from lib.types import Property as Props, Props_dtype
 from loguru import logger
 
 
@@ -38,28 +39,35 @@ def apply_molwise(new_props) -> callable:
 
 @apply_molwise(new_props=[])
 def center_positions_on_centroid(mol) -> dict:
-    positions = mol[Property.positions]  # (n_atoms, 3)
-    centroids = (positions).mean(dim=0, keepdim=True)
-    new_positions = positions - centroids
-    return {Property.positions: new_positions}
+    positions = mol[Props.positions]  # (n_atoms, 3)
+    centroid = (positions).mean(dim=0, keepdim=True)
+    new_positions = positions - centroid
+    return {Props.positions: new_positions}
+
+
+@apply_molwise(new_props=[])
+def center_positions_on_center_of_mass(mol) -> dict:
+    masses = th.tensor(atomic_masses[mol[Props.atomic_numbers]], dtype=th.float32)
+    com = (masses.unsqueeze(-1) * mol[Props.position]).sum(0) / masses.sum()
+    return {Props.positions: mol[Props.positions] - com}
 
 
 @apply_molwise(
-    new_props=[Property.i_idx, Property.j_idx],
+    new_props=[Props.i_idx, Props.j_idx],
 )
 def compute_neigbourhoods(mol, cutoff) -> dict:
-    positions = mol[Property.positions]  # (n_atoms, 3)
-    atomic_nums = mol[Property.atomic_numbers]  # (n_atoms,)
+    positions = mol[Props.positions]  # (n_atoms, 3)
+    atomic_nums = mol[Props.atomic_numbers]  # (n_atoms,)
     at = Atoms(atomic_nums, positions, pbc=False)
     idx_i, idx_j = neighbor_list("ij", at, cutoff)
     return {
-        Property.i_idx: th.tensor(idx_i, dtype=property_dtype[Property.i_idx]),
-        Property.j_idx: th.tensor(idx_j, dtype=property_dtype[Property.j_idx]),
+        Props.i_idx: th.tensor(idx_i, dtype=Props_dtype[Props.i_idx]),
+        Props.j_idx: th.tensor(idx_j, dtype=Props_dtype[Props.j_idx]),
     }
 
 
 def dynamic_batch_size(batch, cutoff=30) -> dict:
-    batch_size, n_atoms = batch[Property.mask].shape
+    batch_size, n_atoms = batch[Props.mask].shape
     cost = n_atoms**3 / cutoff**3
     if cost > 1:
         cutoff_factor = 1 / cost
@@ -83,8 +91,8 @@ def augment_positions(
     for k, v in batch.items():
         batch[k] = v.repeat_interleave(augmentation_mult, dim=0)
 
-    positions = batch[Property.positions]  # (n_batches, n_atoms, 3)
-    forces = batch[Property.forces]  # (n_batches, n_atoms, 3)
+    positions = batch[Props.positions]  # (n_batches, n_atoms, 3)
+    forces = batch[Props.forces]  # (n_batches, n_atoms, 3)
 
     n_batches, _, _ = positions.size()
     if random_rotation:
@@ -97,14 +105,14 @@ def augment_positions(
         positions = th.bmm(positions, H)
         forces = th.bmm(forces, H)
 
-    if Property.dipole in batch:
-        dipole = batch[Property.dipole]
+    if Props.dipole in batch:
+        dipole = batch[Props.dipole]
         dipole = th.bmm(dipole.unsqueeze(1), R).squeeze(1)
         dipole = th.bmm(dipole.unsqueeze(1), H).squeeze(1)
-        batch[Property.dipole] = dipole
+        batch[Props.dipole] = dipole
 
-    batch[Property.positions] = positions
-    batch[Property.forces] = forces
+    batch[Props.positions] = positions
+    batch[Props.forces] = forces
     return batch
 
 

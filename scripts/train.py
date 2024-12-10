@@ -40,33 +40,42 @@ p_no_scheduler = pbuilds(get_lr_scheduler)
 p_cosine_scheduler = pbuilds(
     get_lr_scheduler,
     scheduler_type="cosine_warmup",
-    warmup_steps=2000,
+    warmup_steps=5000,
     min_lr=1e-7,
 )
-loss_module = builds(
+loss_module_forces = builds(
     LossModule,
     targets=["forces"],
     loss_types={"forces": "mse"},
-    metrics={"forces": ["mae", "mse", "rmse", "euclidean", "huber"]},
-    compute_metrics_train=True,
+    metrics={"forces": ["mae", "mse", "euclidean"]},
+    compute_metrics_train=False,
 )
+loss_module_dipole = builds(
+    LossModule,
+    targets=["dipole"],
+    loss_types={"dipole": "mse"},
+    metrics={"dipole": ["mae", "mse", "euclidean"]},
+    compute_metrics_train=False,
+)
+
 pair_encoder_model = builds(
     PairEncoder,
-    n_layers=3,
+    n_layers=12,
     embd_dim=192,
     num_3d_kernels=128,
     cls_token=False,
     num_heads=12,
     activation="gelu",
-    ffn_multiplier=4,
+    ffn_multiplier=2,
     attention_dropout=0.0,
     ffn_dropout=0.0,
     head_dropout=0.0,
     norm_first=True,
     norm="layer",
     decomposer_type="pooling",
-    target_heads=["forces"],
+    target_heads=["dipole"],
     head_project_down=True,
+    compose_dipole_from_charges=False,
 )
 pair_encoder_data_config = builds(
     get_pair_encoder_pipeline_config,
@@ -75,6 +84,7 @@ pair_encoder_data_config = builds(
     random_reflection=True,
     center_positions=True,
     dynamic_batch_size_cutoff=29,
+    include_dipole=True,
 )
 qcml_data = pbuilds(
     get_qcml_dataset,
@@ -86,7 +96,7 @@ qcml_data = pbuilds(
 pretrain_loop = pbuilds(
     train_loop,
     log_interval=5,
-    eval_interval=1000,
+    eval_interval=5000,
     save_interval=50000,
     eval_samples=50000,
     clip_grad=1.0,
@@ -102,13 +112,13 @@ def train(
     model: nn.Module = pair_encoder_model,
     data: DatasetSplits = qcml_data,
     pipeline_conf: PipelineConfig = pair_encoder_data_config,
-    loss: LossModule = loss_module,
+    loss: LossModule = loss_module_dipole,
     train_loop: Partial[callable] | None = pretrain_loop,
     lr_scheduler: Partial[callable] | None = p_cosine_scheduler,
     ema: Partial[EMAModel] | None = p_ema,
     optimizer: Partial[th.optim.Optimizer] = p_optim,
     batch_size: int = 256,
-    total_steps: int = 200_000,
+    total_steps: int = 220_000,
     lr: float = 5e-4,
     grad_accum_steps: int = 1,
     checkpoint_path: str | None = None,
@@ -188,7 +198,10 @@ def main(
     mp.set_start_method("spawn", force=True)
     world_size = cfg.runtime.n_gpu if th.cuda.is_available() else 1
     logger.info(f"Running {world_size} process(es)")
-    random_port = str(np.random.randint(20000, 50000))
+    rng = np.random.RandomState()  # port selection should be truly random
+    random_port = str(
+        rng.randint(20000, 50000),
+    )
     cfg.runtime.out_dir = get_hydra_output_dir()
 
     if world_size > 1:

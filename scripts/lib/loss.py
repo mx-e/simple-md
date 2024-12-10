@@ -136,7 +136,6 @@ class LossModule(nn.Module):
 
     def forward(self, predictions, inputs) -> dict[str | Props, th.Tensor]:
         losses = {}
-
         for loss_prop in self.targets:
             loss_funcs = (
                 self.loss_funcs_val[loss_prop]

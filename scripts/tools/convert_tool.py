@@ -70,7 +70,7 @@ NEW_CONFIG_TEMPLATE = {
             "_target_": "lib.loss.LossModule",
             "targets": ["forces"],
             "loss_types": {"forces": "euclidean"},
-            "metrics": {"forces": ["mae", "mse", "rmse", "euclidean"]},
+            "metrics": {"forces": ["mae", "mse", "euclidean"]},
         },
         "lr_scheduler": {
             "_target_": "lib.lr_scheduler.get_lr_scheduler",

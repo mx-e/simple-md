@@ -40,7 +40,7 @@ qcml_data = pbuilds(
 loss_module = builds(
     LossModule,
     targets=["forces"],
-    loss_types={"forces": "mae"},
+    loss_types={"forces": "euclidean"},
     metrics={"forces": ["mae", "rmse", "euclidean", "huber", "mse"]},
     losses_per_mol=True,
 )

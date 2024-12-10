@@ -49,7 +49,7 @@ class WandBRun:
             entity = config.WANDB_ENTITY
             project = config.WANDB_PROJECT
 
-        run = wandb.init(entity=entity, project=project, **kwargs)
+        run = wandb.init(entity=entity, project=project, **kwargs, config={})
 
         if not isinstance(run, Run):
             raise TypeError("Could not initalize WandB run.")

@@ -1,13 +1,15 @@
 import math
 from functools import partial
+from typing import Literal
 
 import torch as th
 from lib.data.transforms import (
     augment_positions,
     center_positions_on_centroid,
+    center_positions_on_center_of_mass,
     dynamic_batch_size,
 )
-from lib.types import PipelineConfig, PropertyType, property_type
+from lib.types import PipelineConfig, PropertyType, property_dims, property_type
 from lib.types import Property as Props
 from torch import nn
 from torch.nn import functional as F
@@ -51,7 +53,7 @@ def get_pair_encoder_pipeline_config(
     if include_dipole:
         needed_props += [Props.dipole]
     return PipelineConfig(
-        pre_collate_processors=([center_positions_on_centroid] if center_positions else []),
+        pre_collate_processors=([center_positions_on_center_of_mass] if center_positions else []),
         post_collate_processors=augment + dyn_batch,
         post_collate_processors_val=[],
         collate_type="tall",
@@ -75,9 +77,10 @@ class PairEncoder(nn.Module):
         head_dropout: float,
         norm_first: bool,
         norm: str,
-        decomposer_type: str,
+        decomposer_type: Literal["pooling", "diagonal"],
         target_heads: list[str],
         head_project_down: bool,
+        compose_dipole_from_charges: bool = False,
     ) -> None:
         super().__init__()
         self.embedding = PairEmbedding(embd_dim, num_3d_kernels, cls_token)
@@ -114,6 +117,8 @@ class PairEncoder(nn.Module):
                 for target in target_heads
             }
         )
+        if Props.dipole in self.heads and compose_dipole_from_charges:
+            self.heads["dipole"].set_compose_from_charges(True)
 
     def reset_parameters(self) -> None:
         self.apply(self._init_weights)
@@ -449,6 +454,27 @@ class MLP(nn.Sequential):
             )
 
 
+def get_output_mlp(
+    embd_dim: int,
+    activation_fn: any,
+    project_down: bool,
+    head_dropout: float,
+    output_dim: int,
+):
+    return nn.Sequential(
+        nn.Linear(embd_dim, embd_dim // 2 if project_down else embd_dim),
+        activation_fn(),
+        nn.Dropout(head_dropout),
+        nn.Linear(
+            embd_dim // 2 if project_down else embd_dim,
+            embd_dim // 4 if project_down else embd_dim,
+        ),
+        activation_fn(),
+        nn.Dropout(head_dropout),
+        nn.Linear(embd_dim // 4 if project_down else embd_dim, output_dim, bias=False),
+    )
+
+
 class NodeLevelRegressionHead(nn.Module):
     def __init__(
         self,
@@ -460,32 +486,26 @@ class NodeLevelRegressionHead(nn.Module):
         project_down: bool,
     ) -> None:
         super().__init__()
+        self.embd_dim = embd_dim
         self.cls_token = cls_token
+        self.project_down = project_down
+        self.head_dropout = head_dropout
         self.final_ln_node = nn.LayerNorm(embd_dim)
         if activation == "relu":
-            act_fn = nn.ReLU
+            self.act_fn = nn.ReLU
         elif activation == "gelu":
-            act_fn = nn.GELU
+            self.act_fn = nn.GELU
         else:
             raise ValueError(f"Activation function {activation} is not supported")
         self.target = target
-        self.mlp = nn.Sequential(
-            nn.Linear(embd_dim, embd_dim // 2 if project_down else embd_dim),
-            act_fn(),
-            nn.Dropout(head_dropout),
-            nn.Linear(
-                embd_dim // 2 if project_down else embd_dim,
-                embd_dim // 4 if project_down else embd_dim,
-            ),
-            act_fn(),
-            nn.Dropout(head_dropout),
-            nn.Linear(embd_dim // 4 if project_down else embd_dim, 3, bias=False),
-        )
+        self.output_dim = property_dims[target]
+        self.mlp = get_output_mlp(embd_dim, self.act_fn, project_down, head_dropout, self.output_dim)
         self.target_type: PropertyType = property_type[target]
         assert self.target_type in [
             PropertyType.mol_wise,
             PropertyType.atom_wise,
         ], f"Invalid target type {self.target_type}"
+        self.dipole_compose_from_charges = False  # only relevant for dipole
 
     def reset_parameters(self) -> None:
         self.apply(self._init_weights)
@@ -496,11 +516,32 @@ class NodeLevelRegressionHead(nn.Module):
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
+    def set_dipole_compose_from_charges(self, compose: bool) -> None:
+        if self.taget != Props.dipole:
+            raise ValueError("Can only set compose from charges for dipole head")
+        if compose and self.cls_token:
+            raise ValueError("Cannot compose dipole from charges with cls token present")
+        self.dipole_compose_from_charges = compose
+        self.mlp = get_output_mlp(
+            embd_dim=self.embd_dim,
+            activation_fn=self.act_fn,
+            project_down=self.project_down,
+            head_dropout=self.head_dropout,
+            output_dim=1,
+        )
+
     def forward(self, h, inputs) -> th.Tensor:
         mask = inputs[Props.mask]
         h = h.clone()  # (b,n,e)
         h = self.final_ln_node(h)  # (b,n,e)
         mask = mask.float().unsqueeze(-1)
+
+        if self.target == Props.dipole and self.dipole_compose_from_charges:
+            positions = inputs[Props.positions]
+            h = h * mask
+            charges = self.mlp(h)
+            dipole = th.sum(charges * positions, dim=1)
+            return dipole
 
         if self.target_type == PropertyType.mol_wise:
             h = (
@@ -508,9 +549,9 @@ class NodeLevelRegressionHead(nn.Module):
                 if self.cls_token
                 else (h * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-9)  # (b,e)
             )
-
-        elif self.target_type == PropertyType.atom_wise and self.cls_token:
-            h = h[:, 1:, :]  # (b,n-1,e)
+        elif self.target_type == PropertyType.atom_wise:
+            if self.cls_token:
+                h = h[:, 1:, :]  # (b,n-1,e)
             h = h * mask
 
         return self.mlp(h)

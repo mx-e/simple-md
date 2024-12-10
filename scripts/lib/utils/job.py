@@ -173,7 +173,6 @@ class SweepJob(Job):
         """Run the sweep on the cluster."""
         parameters = {cfg_key: {"values": list(values)} for cfg_key, values in self.parameters.items()}
         metric = {"goal": self.metric_goal, "name": self.metric_name}
-        print(sys.argv)
         program, args = self.get_absolute_program_path(sys.argv[0]), self.filter_args(sys.argv[1:])
         command = [
             "${env}",
