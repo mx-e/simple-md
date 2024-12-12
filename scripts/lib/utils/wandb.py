@@ -53,5 +53,19 @@ class WandBRun:
 
         if not isinstance(run, Run):
             raise TypeError("Could not initalize WandB run.")
-
+        self.run_id = run.id
         self.run = run
+        self.project = project
+        self.entity = entity
+        self.config = dict(run.config)
+
+    def reinit(self) -> None:
+        """Recreate the run, for instance on a subprocess"""
+        self.run = wandb.init(
+            entity=self.entity, project=self.project, id=self.run_id, resume="must", config=self.config
+        )
+
+    def set_config(self, config: dict) -> None:
+        """Update the run's config."""
+        self.run.config.update(config)
+        self.config = dict(self.run.config)
