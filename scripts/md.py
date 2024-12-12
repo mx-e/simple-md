@@ -39,11 +39,11 @@ def main(
     cfg: BaseConfig,
     temperature: float = 300,
     timestep: float = 0.5,
-    n_data_aug: int = 32,
-    step_wise_random: bool = False,
-    n_steps: int = 10000,
+    n_data_aug: int = 64,
+    step_wise_random: bool = True,
+    n_steps: int = 30000,
     thermostat_type: Literal["nose_hoover", "berendsen", "andersen", "langevin"] = "langevin",
-    thermostat_taut: float = 100.0,
+    thermostat_taut: float = 1000.0,
     init_struct_dir: Path = "data_md",
     init_struct: Literal[
         "15_ala",
@@ -53,7 +53,8 @@ def main(
         "ethanol",
         "hydrogen",
         "silver_trimer",
-    ] = "silver_trimer",
+    ] = "ethanol",
+    last_n_steps: int | None = 5000,  # export the last n steps of the trajectory separately
     model_run_dir: Path = MISSING,
     checkpoint_name: str = "best_model",
     ptdtype: Literal["float32", "bfloat16", "float16"] = "float32",
@@ -98,6 +99,8 @@ def main(
 
     # Run MD simulation
     traj_path = Path(job_dir) / "md_results" / "md_trajectory.traj"
+    if last_n_steps is not None:
+        assert last_n_steps <= n_steps, "last_n_steps must be less than or equal to n_steps"
     energy_tracker = run_md_simulation(
         atoms=atoms,
         model=model,
@@ -111,6 +114,7 @@ def main(
         trajectory_file=traj_path,
         thermostat_type=thermostat_type,
         taut=thermostat_taut,
+        save_last_n_steps=last_n_steps,
     )
     # Save and plot results
     energy_tracker.save_data(results_dir)
@@ -136,6 +140,7 @@ def run_md_simulation(
     trajectory_file="md_trajectory.traj",
     thermostat_type="Nose-Hoover",  # Added thermostat selection
     taut=100.0,  # Thermostat time constant in fs
+    save_last_n_steps=None,
 ) -> "MDEnergyTracker":
     # Set up calculator
     calculator = MLCalculator(
@@ -176,7 +181,7 @@ def run_md_simulation(
             atoms,
             timestep * units.fs,
             temperature_K=temperature,
-            friction=1.0 / (taut * units.fs),
+            friction=1.0 / (taut),
         )
     else:
         raise ValueError(f"Unknown thermostat type: {thermostat_type}")
@@ -189,16 +194,16 @@ def run_md_simulation(
     def save_frame() -> None:
         frame = atoms.copy()
         frame.info["comment"] = (
-            f"time={len(xyz_trajectory) * timestep * 10:.1f}fs "
+            f"time={len(xyz_trajectory) * timestep:.1f}fs "
             f"temp={atoms.get_temperature():.1f}K "
             f"thermostat={thermostat_type}"
         )
         xyz_trajectory.append(frame)
 
     # Attach observers
-    dyn.attach(traj.write, interval=10)
-    dyn.attach(save_frame, interval=10)
-    dyn.attach(energy_tracker, interval=10)
+    # dyn.attach(traj.write, interval=10)
+    dyn.attach(save_frame, interval=1)
+    dyn.attach(energy_tracker, interval=1)
 
     # Run dynamics with improved monitoring
     logger.info(f"Starting MD simulation with {thermostat_type} thermostat for {steps} steps...")
@@ -236,6 +241,11 @@ def run_md_simulation(
         frame.set_cell([0, 0, 0])
         frame.set_pbc(False)
     write(xyz_file, xyz_trajectory)
+
+    if save_last_n_steps is not None:
+        last_n_traj = xyz_trajectory[-save_last_n_steps:]
+        last_n_traj_file = str(Path(trajectory_file).with_name(f"last_{save_last_n_steps}_steps.xyz"))
+        write(last_n_traj_file, last_n_traj)
 
     logger.info(f"Trajectory saved to {trajectory_file} and {xyz_file}")
 
@@ -279,7 +289,7 @@ class MLCalculator(Calculator):
         data = {
             "positions": positions_bohr,
             "atomic_numbers": atoms.numbers,
-            "charge": 1,  # atoms.get_initial_charges().sum(),
+            "charge": atoms.get_initial_charges().sum(),
             "multiplicity": multiplicity,
         }
 
