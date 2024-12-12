@@ -26,21 +26,19 @@ def get_pair_encoder_pipeline_config(
     include_energy: bool = False,
     include_dipole: bool = False,
 ) -> PipelineConfig:
-    augment = [
-        (
+    augment = (
+        [
             partial(
                 augment_positions,
                 augmentation_mult=augmentation_mult,
                 random_reflection=random_reflection,
                 random_rotation=random_rotation,
             )
-            if augmentation_mult > 1
-            else None
-        )
-    ]
-    dyn_batch = [
-        (partial(dynamic_batch_size, cutoff=dynamic_batch_size_cutoff) if dynamic_batch_size_cutoff else None)
-    ]
+        ]
+        if augmentation_mult > 1
+        else []
+    )
+    dyn_batch = [partial(dynamic_batch_size, cutoff=dynamic_batch_size_cutoff)] if dynamic_batch_size_cutoff else []
     needed_props = [
         Props.positions,
         Props.atomic_numbers,

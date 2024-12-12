@@ -52,7 +52,7 @@ def pre_call(root_config: DictConfig) -> None:
 
     if (wandb_config := config.get("wandb")) is not None:
         wandb_run: WandBRun = instantiate(wandb_config)
-        wandb_run.run.config.update(OmegaConf.to_container(root_config))
+        wandb_run.set_config(OmegaConf.to_container(root_config))
         wandb.save(output_path / ".hydra/*", base_path=output_path, policy="now")
 
 

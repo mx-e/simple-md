@@ -30,10 +30,10 @@ class BaseConfig:
 
 BaseSlurmConfig = builds(
     SlurmConfig,
-    partition="gpu-2d",
-    cpus_per_task=8,
+    partition="gpu-7d",
+    cpus_per_task=16,
     gpus_per_task=1,
-    memory_gb=48,
+    memory_gb=64,
     nodes=1,
     tasks_per_node=1,
     exclude="head049,head076",

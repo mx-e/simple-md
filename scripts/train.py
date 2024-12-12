@@ -53,7 +53,7 @@ loss_module_forces = builds(
 loss_module_dipole = builds(
     LossModule,
     targets=["dipole"],
-    loss_types={"dipole": "mse"},
+    loss_types={"dipole": "mae"},
     metrics={"dipole": ["mae", "mse", "euclidean"]},
     compute_metrics_train=False,
 )
@@ -73,7 +73,7 @@ pair_encoder_model = builds(
     norm_first=True,
     norm="layer",
     decomposer_type="pooling",
-    target_heads=["forces"],
+    target_heads=["dipole"],
     head_project_down=True,
     compose_dipole_from_charges=False,
 )
@@ -112,7 +112,7 @@ def train(
     model: nn.Module = pair_encoder_model,
     data: DatasetSplits = qcml_data,
     pipeline_conf: PipelineConfig = pair_encoder_data_config,
-    loss: LossModule = loss_module_forces,
+    loss: LossModule = loss_module_dipole,
     train_loop: Partial[callable] | None = pretrain_loop,
     lr_scheduler: Partial[callable] | None = p_cosine_scheduler,
     ema: Partial[EMAModel] | None = p_ema,
@@ -126,6 +126,8 @@ def train(
     setup_dist(rank, world_size, port=port)
     try:
         device = setup_device(rank)
+        if world_size > 1 and rank == 0:
+            cfg.wandb.reinit()  # move wandb session to spawned process for multi-gpu
         # model
         ddp_args = {
             "device_ids": ([rank] if cfg.runtime.device == "cuda" else None),
