@@ -2,7 +2,7 @@
 name = "simple_md"
 version = "0.0.1"
 description = "Simple Molecular dynamics benchmark"
-requires-python = "==3.12"
+requires-python = "==3.12.*"
 readme = { file = "README.md", content-type = "text/markdown" }
 
 [tool.mypy]
@@ -128,7 +128,4 @@ select = ["ALL"]
 "**/tests/**/*.py" = ["S101", "ARG", "FBT"]
 
 [tool.pytest.ini_options]
-pythonpath = [
-    "scripts",
-    "scripts/lib",
-]
+pythonpath = ["scripts", "scripts/lib"]
