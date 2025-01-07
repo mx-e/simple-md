@@ -205,7 +205,7 @@ def run_md_simulation(
         raise ValueError(f"Unknown thermostat type: {thermostat_type}")
 
     # Set up trajectory file and energy tracker
-    # traj = trajectory.Trajectory(trajectory_file, "w", atoms)
+    traj = trajectory.Trajectory(trajectory_file, "w", atoms)
     energy_tracker = MDEnergyTracker(
         atoms,
         timestep,
@@ -227,7 +227,7 @@ def run_md_simulation(
         xyz_trajectory.append(frame)
 
     # Attach observers
-    # dyn.attach(traj.write, interval=10)
+    dyn.attach(traj.write, interval=traj_log_interval)
     dyn.attach(save_frame, interval=traj_log_interval)
     dyn.attach(energy_tracker, interval=1)
 
