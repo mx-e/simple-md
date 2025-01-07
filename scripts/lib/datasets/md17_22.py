@@ -6,7 +6,7 @@ from frozendict import frozendict
 from lib.types import DatasetSplits, Split
 from lib.types import Property as Props
 from loguru import logger
-from sklearn.model_selection import train_test_split
+from lib.datasets.utils import non_overlapping_train_test_val_split
 from torch import distributed as dist
 from torch.utils.data import Subset
 
@@ -77,12 +77,7 @@ def get_md17_22_dataset(
     dataset = NPZDataset(file_path, md17_props)
 
     index_array = np.arange(len(dataset))
-    train_val, test = train_test_split(
-        index_array, test_size=splits["train"] + splits["val"], random_state=seed, stratify=dataset.file_indices
-    )
-    train, val = train_test_split(
-        train_val, test_size=splits["val"], random_state=seed, stratify=dataset.file_indices[train_val]
-    )
+    train, test, val = non_overlapping_train_test_val_split(splits, index_array, dataset.molecule_ids, seed=seed)
 
     datasets = {
         Split.train: Subset(dataset, train),
