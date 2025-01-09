@@ -2,6 +2,7 @@ import numpy as np
 from sklearn.model_selection import GroupShuffleSplit
 
 from tools.preprocess_fixed_splits_qcml import get_split_hash
+from loguru import logger
 
 
 def non_overlapping_train_test_val_split(
@@ -28,5 +29,16 @@ def non_overlapping_train_test_val_split_hash_based(
     train_idxs = np.where(hash_val < splits["train"])[0]
     test_idxs = np.where((hash_val >= splits["train"]) & (hash_val < splits["train"] + splits["test"]))[0]
     val_idxs = np.where(hash_val >= splits["train"] + splits["test"])[0]
+
+    # check if the split sizes are close to the desired values and warn if not
+    train_size = len(train_idxs) / len(groups)
+    test_size = len(test_idxs) / len(groups)
+    val_size = len(val_idxs) / len(groups)
+    if abs(train_size - splits["train"]) > 0.01:
+        logger.warning(f"Warning: train split size is {train_size:.2f} instead of {splits['train']:.2f}")
+    if abs(test_size - splits["test"]) > 0.01:
+        logger.warning(f"Warning: test split size is {test_size:.2f} instead of {splits['test']:.2f}")
+    if abs(val_size - splits["val"]) > 0.01:
+        logger.warning(f"Warning: val split size is {val_size:.2f} instead of {splits['val']:.2f}")
 
     return train_idxs, test_idxs, val_idxs
