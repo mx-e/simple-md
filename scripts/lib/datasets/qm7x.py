@@ -108,13 +108,21 @@ def get_qm7x_dataset(
         shutil.copy2(permanent_db_path, db_path)
 
     # Wait for rank 0 to finish database operations
-    dist.barrier()
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
 
     # Create dataset from the database
     dataset = ASEAtomsDBDataset(db_path)
 
     # Split dataset
-    molecule_names = [dataset.get_chemical_formula(i) for i in range(len(dataset))]
+    logger.info("Splitting dataset...")
+    # load molecule names from db_path
+    if not Path.exists(db_path.with_suffix(".txt")):
+        molecule_names = [dataset.get_chemical_formula(i) for i in tqdm(range(len(dataset)))]
+        with Path.open(db_path.with_suffix(".txt"), "w") as f:
+            f.write("\n".join(molecule_names))
+    else:
+        molecule_names = [line.rstrip("\n") for line in Path.open(db_path.with_suffix(".txt"), "r")]
 
     train_idx, test_idx, val_idx = non_overlapping_train_test_val_split_hash_based(
         splits, molecule_names, seed
@@ -143,6 +151,7 @@ def create_ase_db_from_qm7x(hdf5_files: list[Path], db_path: Path, duplicates_id
     logger.info("Creating ASE database from QM7-X data files...")
 
     # Create database connection
+    chemical_formulas = []
     with connect(db_path) as db:
         # Process each HDF5 file
         for file_path in hdf5_files:
@@ -170,9 +179,14 @@ def create_ase_db_from_qm7x(hdf5_files: list[Path], db_path: Path, duplicates_id
 
                         # add sum formula to properties
                         properties["chemical_formula"] = atoms.get_chemical_formula()
+                        chemical_formulas.append(properties["chemical_formula"])
 
                         # Write to database
                         db.write(atoms, data=properties)
+
+    # save chemical formulas to a file
+    with Path.open(db_path.with_suffix(".txt"), "w") as f:
+        f.write("\n".join(chemical_formulas))
 
     logger.info(f"Database created at {db_path}")
     logger.info(f"Total entries: {db.count()}")
@@ -276,4 +290,4 @@ def extract_xz(source: Path, target: Path) -> None:
 
     logger.info("Done.")
 
-get_qm7x_dataset(0, Path("."), Path("."))
+get_qm7x_dataset(0, Path("."), Path("temp"))
