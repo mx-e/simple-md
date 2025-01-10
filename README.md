@@ -37,9 +37,9 @@ export APPTAINERENV_APPEND_PATH=/opt/slurm/bin:/opt/slurm/sbin
 The following aliases for interacting with Apptainer are recommended:
 
 ```bash
-rebuild='apptainer build --nv container.sif container.def'
-add-dep='apptainer run --nv container.sif poetry --no-cache add --lock'
-remove-dep='apptainer run --nv container.sif poetry --no-cache remove --lock'
+alias rebuild='apptainer build --nv container.sif container.def'
+alias add-dep='apptainer run --nv container.sif poetry --no-cache add --lock'
+alias remove-dep='apptainer run --nv container.sif poetry --no-cache remove --lock'
 ```
 
 ### Step 3: Change container path
