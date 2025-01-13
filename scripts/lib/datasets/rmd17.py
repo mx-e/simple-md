@@ -4,14 +4,13 @@ from urllib import request
 
 import numpy as np
 from frozendict import frozendict
+from lib.datasets.datasets import NPZDataset
 from lib.types import DatasetSplits, Split
 from lib.types import Property as Props
 from loguru import logger
 from sklearn.model_selection import train_test_split
 from torch import distributed as dist
-from torch.utils.data import Dataset, Subset
-
-from .datasets import NPZDataset
+from torch.utils.data import Subset
 
 rmd17_props = frozendict(
     {
@@ -21,30 +20,6 @@ rmd17_props = frozendict(
         Props.positions: "coords",
     }
 )
-
-
-class NPZDataset(Dataset):
-    def __init__(self, file: Path) -> None:
-        self.file = file
-        self.data = {}  # Stores data loaded from file
-        self.len = 0
-
-        with np.load(file, allow_pickle=True) as npz_file:
-            len_data = npz_file["forces"].shape[0]
-            self.len = len_data
-            self.file_data.append({v: npz_file[v] for v in rmd17_props.values()})
-
-    def __len__(self) -> int:
-        return self.len
-
-    def __getitem__(self, idx) -> dict:
-        sample = {
-            "energies": self.data["energies"][idx],
-            "forces": self.data["forces"][idx],
-            "coords": self.data["coords"][idx],
-            "nuclear_charges": self.data["nuclear_charges"][idx],
-        }
-        return sample
 
 
 _filenames = frozendict(
@@ -98,17 +73,19 @@ def get_md17_22_dataset(
 
     if not file_path.exists() and rank == 0:
         logger.info(f"Md17 dataset not found, downloading to {data_path}")
-        download_rmd17_dataset(data_dir, molecule_name)
+        download_rmd17_dataset(data_dir)
 
-    dist.barrier()
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+
     dataset = NPZDataset(file_path, props=rmd17_props)
 
     index_array = np.arange(len(dataset))
     train_val, test = train_test_split(
-        index_array, test_size=splits["train"] + splits["val"], random_state=seed, stratify=dataset.file_indices
+        index_array, test_size=splits["train"] + splits["val"], random_state=seed
     )
     train, val = train_test_split(
-        train_val, test_size=splits["val"], random_state=seed, stratify=dataset.file_indices[train_val]
+        train_val, test_size=splits["val"], random_state=seed
     )
 
     datasets = {
