@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 from frozendict import frozendict
-from lib.datasets.utils import non_overlapping_train_test_val_split_hash_based
+from lib.datasets.utils import non_overlapping_train_test_val_split_hash_based, convert_force
 from lib.types import DatasetSplits, Split
 from lib.types import Property as Props
 from load_atoms import AtomsDataset, load_dataset
@@ -12,10 +12,11 @@ from torch.utils.data import Dataset, Subset
 
 
 class LoadAtomsDataset(Dataset):
-    def __init__(self, atoms_db: AtomsDataset, data_props: Props, group: np.array) -> None:
+    def __init__(self, atoms_db: AtomsDataset, data_props: Props, group: np.array, force_unit: str) -> None:
         self.atoms_db = atoms_db
         self.data_props = data_props  # Stores data loaded from file
         self.group = group
+        self.force_unit = force_unit
 
     def __len__(self) -> int:
         return len(self.atoms_db)
@@ -25,7 +26,7 @@ class LoadAtomsDataset(Dataset):
         sample = {}
         for k, v in self.data_props.items():
             if k == Props.forces:
-                sample[v] = structure.arrays["forces"]
+                sample[v] = convert_force(structure.arrays["forces"], from_unit=self.force_unit, to_unit="Hartree/Bohr")
             elif k == Props.atomic_numbers:
                 sample[v] = structure.arrays["numbers"]
             elif k == Props.positions:
@@ -71,7 +72,7 @@ def get_anix_dataset(
     # encode string names to unique integers
     molecule_names = np.array(names)
     molecule_ids = OrdinalEncoder().fit_transform(np.array(names).reshape(-1, 1)).reshape(-1)
-    dataset = LoadAtomsDataset(dataset, anix_props, molecule_ids)
+    dataset = LoadAtomsDataset(dataset, anix_props, molecule_ids, force_unit="eV/Å")
 
     train_idx, test_idx, val_idx = non_overlapping_train_test_val_split_hash_based(splits, molecule_names, seed=seed)
 

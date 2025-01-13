@@ -78,7 +78,7 @@ def get_rmd17_dataset(
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
 
-    dataset = NPZDataset(file_path, props=rmd17_props)
+    dataset = NPZDataset(file_path, props=rmd17_props, force_unit="kcal/(mol·Å)")
 
     index_array = np.arange(len(dataset))
     train_val, test = train_test_split(index_array, test_size=splits["train"] + splits["val"], random_state=seed)

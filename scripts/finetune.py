@@ -1,4 +1,4 @@
-#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data container.sif python
+#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data --bind /home/bbdc2/quantum/max/:/data container.sif python
 from functools import partial
 from pathlib import Path
 

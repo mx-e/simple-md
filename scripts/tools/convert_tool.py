@@ -53,8 +53,8 @@ NEW_CONFIG_TEMPLATE = {
         "data": {
             "_target_": "lib.datasets.qcml.get_qcml_dataset",
             "_partial_": True,
-            "data_dir": "/home/maxi/MOLECULAR_ML/5_refactored_repo/data_ar",
-            "dataset_name": "qcml_unified_fixed_split_by_smiles",
+            "data_dir": "data/data_arrecord",
+            "dataset_name": "qcml_fixed_split_by_smiles",
             "dataset_version": "1.0.0",
             "copy_to_temp": True,
         },
