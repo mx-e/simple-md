@@ -473,8 +473,7 @@ class MDEnergyTracker:
         self.total_energies.append(kinetic + self.integrated_energy)
 
     def compute_ir_spectrum(self, max_freq=4000) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Compute IR spectrum from dipole moment time series.
+        """Compute IR spectrum from dipole moment time series.
         Uses direct Fourier transform of dipole moments.
         """
         if not self.dipole_moments:

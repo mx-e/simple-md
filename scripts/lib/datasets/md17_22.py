@@ -3,10 +3,10 @@ from urllib import request
 
 import numpy as np
 from frozendict import frozendict
+from lib.datasets.utils import non_overlapping_train_test_val_split
 from lib.types import DatasetSplits, Split
 from lib.types import Property as Props
 from loguru import logger
-from lib.datasets.utils import non_overlapping_train_test_val_split
 from torch import distributed as dist
 from torch.utils.data import Subset
 
@@ -59,6 +59,7 @@ def get_md17_22_dataset(
     molecule_name: str,
     splits: dict[str, float] | None = None,
     seed: int = 42,
+    copy_to_temp: bool = False,  # noqa: ARG001
 ) -> DatasetSplits:
     if splits is None:
         splits = {"train": 0.5, "val": 0.3, "test": 0.2}
@@ -73,7 +74,8 @@ def get_md17_22_dataset(
         logger.info(f"Md17 dataset not found, downloading to {data_path}")
         download_md17_22_dataset(data_path, molecule_name)
 
-    dist.barrier()
+    if dist.is_initialized():
+        dist.barrier()  # Ensure data is copied before proceeding
     dataset = NPZDataset(file_path, md17_props)
 
     index_array = np.arange(len(dataset))
