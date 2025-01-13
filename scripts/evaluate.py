@@ -1,4 +1,4 @@
-#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data /home/maxi/MOLECULAR_ML/5_refactored_repo/container.sif python
+#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data container.sif python
 import itertools
 from functools import partial
 from pathlib import Path
@@ -44,8 +44,6 @@ md17_benzene = pbuilds(
     molecule_name="benzene",
     splits={"train": 1000, "val": 1000, "test": -1},
 )
-
-
 dataset_store = store(group="dataset")
 dataset_store(qcml_data, name="qcml")
 dataset_store(md17_benzene, name="md17_benzene")

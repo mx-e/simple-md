@@ -1,4 +1,4 @@
-#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data /home/maxi/MOLECULAR_ML/5_refactored_repo/container.sif python
+#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data container.sif python
 from functools import partial
 from pathlib import Path
 
@@ -7,10 +7,10 @@ import torch as th
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from conf.base_conf import BaseConfig, configure_main
-from hydra_zen import builds, instantiate, load_from_yaml
+from hydra_zen import builds, instantiate, load_from_yaml, store
 from hydra_zen.typing import Partial
 from lib.data.loaders import get_loaders
-from lib.datasets import get_qcml_dataset
+from lib.datasets import get_qcml_dataset, get_rmd17_dataset
 from lib.ema import EMAModel
 from lib.loss import LossModule
 from lib.lr_scheduler import LRScheduler, get_lr_scheduler
@@ -27,6 +27,7 @@ from lib.utils.run import run
 from loguru import logger
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel as DDP
+from omegaconf import MISSING
 
 pbuilds = partial(builds, zen_partial=True)
 pbuilds_full = partial(builds, zen_partial=True, populate_full_signature=True)
@@ -67,14 +68,7 @@ pair_encoder_data_config = builds(
     random_reflection=True,
     center_positions=True,
     dynamic_batch_size_cutoff=29,
-    include_dipole=True,
-)
-qcml_data = pbuilds(
-    get_qcml_dataset,
-    data_dir="/home/maxi/MOLECULAR_ML/5_refactored_repo/data_ar",
-    dataset_name="qcml_unified_fixed_split_by_smiles",
-    dataset_version="1.0.0",
-    copy_to_temp=True,
+    include_dipole=False,
 )
 ft_loop = pbuilds(
     train_loop,
@@ -86,6 +80,24 @@ ft_loop = pbuilds(
     ptdtype="float32",
 )
 
+qcml_data = pbuilds(
+    get_qcml_dataset,
+    data_dir="./data_ar",
+    dataset_name="qcml_unified_fixed_split_by_smiles",
+    dataset_version="1.0.0",
+    copy_to_temp=True,
+)
+
+md17_benzene = pbuilds(
+    get_rmd17_dataset,
+    data_dir="./data",
+    molecule_name="benzene",
+    splits={"train": 0.8, "val": 0.1, "test": 0.1},
+)
+dataset_store = store(group="ft/dataset")
+dataset_store(qcml_data, name="qcml")
+dataset_store(md17_benzene, name="md17_benzene")
+
 
 def finetune(
     rank: int,
@@ -94,15 +106,15 @@ def finetune(
     cfg: BaseConfig,
     pretrain_model_dir: Path,
     checkpoint_name: str = "best_model",
-    data: DatasetSplits = qcml_data,
+    dataset=MISSING,
     optimizer: Partial[th.optim.Optimizer] = p_optim,
     train_loop: Partial[callable] = ft_loop,
-    batch_size: int = 256,
+    batch_size: int = 32,
     total_steps: int = 220_000,
     lr: float = 1e-4,
     grad_accum_steps: int = 1,
     lr_scheduler: Partial[callable] | None = p_cosine_scheduler,  # None = No schedule
-    loss: LossModule | None = loss_module_dipole,  # None = Same as pretrain
+    loss: LossModule | None = loss_module_forces,  # None = Same as pretrain
     pipeline_conf: PipelineConfig | None = pair_encoder_data_config,  # None = Same as pretrain
     ema: Partial[EMAModel] | None = None,  # None = No EMA
 ) -> None:
@@ -166,7 +178,7 @@ def finetune(
             model = DDP(model.module, **ddp_args)  # rewrap model after modification
 
         # data + loaders
-        data = data(rank)
+        data = dataset(rank)
         if pipeline_conf is None:
             try:
                 pipeline_conf = instantiate(conf["train"]["pipeline_conf"])
@@ -213,7 +225,7 @@ def finetune(
 p_ft_func = pbuilds_full(finetune)
 
 
-@configure_main(extra_defaults=[])
+@configure_main(extra_defaults=[{"ft/dataset": "qcml"}])
 def main(
     cfg: BaseConfig,  # you must keep this argument
     pretrain_model_dir: str,
@@ -239,4 +251,5 @@ def main(
 
 
 if __name__ == "__main__":
+    dataset_store.add_to_hydra_store()
     run(main)

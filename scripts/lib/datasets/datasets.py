@@ -22,9 +22,9 @@ class NPZDataset(Dataset):
 
     def __getitem__(self, idx) -> dict:
         sample = {
-            self.props[Props.energy]: self.data[Props.energy][idx],
-            self.props[Props.forces]: self.data[Props.forces][idx],
-            self.props[Props.positions]: self.data[Props.positions][idx],
-            self.props[Props.atomic_numbers]: self.data[Props.atomic_numbers][idx],
+            self.props[Props.energy]: self.data[self.props[Props.energy]][idx],
+            self.props[Props.forces]: self.data[self.props[Props.forces]][idx],
+            self.props[Props.positions]: self.data[self.props[Props.positions]][idx],
+            self.props[Props.atomic_numbers]: self.data[self.props[Props.atomic_numbers]],
         }
         return sample
