@@ -32,6 +32,7 @@ def get_qcml_dataset(
     if splits is None:
         splits = {"train": "train", "val": "val", "test": "test"}
     data_path = Path(data_dir) / dataset_name / dataset_version
+    logger.info(f"Loading dataset from {data_path.resolve()}")
     splits = {Split[k]: v for k, v in splits.items()}
 
     if copy_to_temp:

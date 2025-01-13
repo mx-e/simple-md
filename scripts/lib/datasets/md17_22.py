@@ -74,7 +74,7 @@ def get_md17_22_dataset(
         download_md17_22_dataset(data_path, molecule_name)
 
     dist.barrier()
-    dataset = NPZDataset(file_path, md17_props)
+    dataset = NPZDataset(file_path, md17_props, force_unit="kcal/(mol·Å)")
 
     index_array = np.arange(len(dataset))
     train, test, val = non_overlapping_train_test_val_split(splits, index_array, dataset.molecule_ids, seed=seed)

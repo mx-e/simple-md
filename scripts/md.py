@@ -1,4 +1,4 @@
-#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data /home/maxi/MOLECULAR_ML/5_refactored_repo/container.sif python
+#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data /home/korjakow/simple-md/container.sif python
 import csv
 from functools import partial
 from pathlib import Path

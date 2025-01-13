@@ -8,7 +8,7 @@ import h5py
 from ase import Atoms
 from ase.db import connect
 from frozendict import frozendict
-from lib.datasets.utils import non_overlapping_train_test_val_split_hash_based
+from lib.datasets.utils import non_overlapping_train_test_val_split_hash_based, convert_force
 from lib.types import DatasetSplits, Split
 from lib.types import Property as Props
 from loguru import logger
@@ -29,7 +29,7 @@ __pbar = None
 
 
 class ASEAtomsDBDataset(Dataset):
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, force_unit: str) -> None:
         self.db_path = db_path
         self.conn = connect(self.db_path, use_lock_file=False)
 
@@ -48,7 +48,7 @@ class ASEAtomsDBDataset(Dataset):
             "Z": Z,
             "positions": positions,
             "energy": properties["energy"],
-            "forces": properties["forces"],
+            "forces": convert_force(properties["forces"], from_unit="eV/Å", to_unit="Hartree/Bohr"),
         }
 
     def get_chemical_formula(self, idx) -> str:
@@ -111,7 +111,7 @@ def get_qm7x_dataset(
     dist.barrier()
 
     # Create dataset from the database
-    dataset = ASEAtomsDBDataset(db_path)
+    dataset = ASEAtomsDBDataset(db_path, force_unit="eV/Å")
 
     # Split dataset
     molecule_names = [dataset.get_chemical_formula(i) for i in range(len(dataset))]

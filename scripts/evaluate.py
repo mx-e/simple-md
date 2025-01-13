@@ -1,4 +1,4 @@
-#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data /home/maxi/MOLECULAR_ML/5_refactored_repo/container.sif python
+#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data /home/korjakow/simple-md/container.sif python
 import itertools
 from functools import partial
 from pathlib import Path
@@ -31,8 +31,8 @@ pbuilds = partial(builds, zen_partial=True)
 
 qcml_data = pbuilds(
     get_qcml_dataset,
-    data_dir="/home/maxi/MOLECULAR_ML/5_refactored_repo/data_ar",
-    dataset_name="qcml_unified_fixed_split_by_smiles",
+    data_dir="data/data_arrecord",
+    dataset_name="qcml_fixed_split_by_smiles",
     dataset_version="1.0.0",
     copy_to_temp=True,
 )
