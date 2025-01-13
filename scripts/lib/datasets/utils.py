@@ -43,11 +43,10 @@ def non_overlapping_train_test_val_split_hash_based(
 
     return train_idxs, test_idxs, val_idxs
 
-def convert_force(force_value, from_unit, to_unit="Hartree/Bohr"):
-    """
-    Convert a force value from a given 'from_unit' to the specified 'to_unit'.
+def convert_force(force_value: float, from_unit: str, to_unit: str="Hartree/Bohr") -> float:
+    """Convert a force value from a given 'from_unit' to the specified 'to_unit'.
     Valid to_unit options here are 'Hartree/Bohr' or 'Hartree/Å'.
-    
+
     Parameters
     ----------
     force_value : float
@@ -62,38 +61,37 @@ def convert_force(force_value, from_unit, to_unit="Hartree/Bohr"):
     to_unit : str
         Desired output force unit. 
         Options: 'Hartree/Bohr' or 'Hartree/Å'
-    
+
     Returns
     -------
     float
         Force in the target to_unit.
     """
-    
     # First convert from the input unit to "Hartree/Bohr" as an internal standard.
     conversion_to_hartree_bohr = {
-        "eV/Å":           0.019447,      
+        "eV/Å":           0.019447,
         "kcal/(mol·Å)":   0.000844,
         "kJ/(mol·Å)":     0.000202,
         "Hartree/Bohr":   1.0,
         "Hartree/Å":      1.0 / 0.52917721067,  # 1 / (Bohr in Å)
     }
-    
+
     if from_unit not in conversion_to_hartree_bohr:
         raise ValueError(f"Input unit '{from_unit}' not recognized.")
-    
+
     # Convert input to "Hartree/Bohr"
     force_in_ha_bohr = force_value * conversion_to_hartree_bohr[from_unit]
-    
+
     # Then if the desired output is "Hartree/Bohr," we are done.
     if to_unit == "Hartree/Bohr":
         return force_in_ha_bohr
-    
+
     # If the desired output is "Hartree/Å," we need to multiply by Bohr->Å
     elif to_unit == "Hartree/Å":
         # 1 Bohr = 0.52917721067 Å
         bohr_in_angstrom = 0.52917721067
         return force_in_ha_bohr / bohr_in_angstrom
-    
+
     else:
         raise ValueError(f"Output unit '{to_unit}' not supported.")
 

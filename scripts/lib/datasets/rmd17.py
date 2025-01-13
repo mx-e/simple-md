@@ -100,5 +100,3 @@ def get_rmd17_dataset(
         splits=datasets,
         dataset_props=rmd17_props,
     )
-
-get_rmd17_dataset(0, Path("."), "aspirin")

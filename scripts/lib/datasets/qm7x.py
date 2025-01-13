@@ -275,5 +275,3 @@ def extract_xz(source: Path, target: Path) -> None:
         raise RuntimeError(f"Could not extract file {s_file}. Please try again.") from e
 
     logger.info("Done.")
-
-get_qm7x_dataset(0, Path("."), Path("."))

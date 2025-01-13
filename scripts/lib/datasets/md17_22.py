@@ -77,7 +77,6 @@ def get_md17_22_dataset(
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
     dataset = NPZDataset(file_path, md17_props, force_unit="kcal/(mol·Å)")
-    print(dataset[0])
 
     index_array = np.arange(len(dataset))
     train_val, test = train_test_split(
@@ -97,5 +96,3 @@ def get_md17_22_dataset(
         splits=datasets,
         dataset_props=md17_props,
     )
-
-get_md17_22_dataset(0, Path('data'), 'aspirin')
