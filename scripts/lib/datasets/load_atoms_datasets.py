@@ -133,5 +133,3 @@ def get_rMD17_dataset(
         splits=datasets,
         dataset_props=anix_props,
     )
-
-get_rMD17_dataset(0, Path("."), "")
