@@ -9,10 +9,10 @@ import matplotlib.pyplot as plt
 import torch as th
 import yaml
 from conf.base_conf import BaseConfig, configure_main
-from hydra_zen import builds, instantiate, load_from_yaml
+from hydra_zen import builds, instantiate, load_from_yaml, store
 from lib.data.loaders import collate_fn
 from lib.data.transforms import augment_positions, center_positions_on_centroid
-from lib.datasets import get_qcml_dataset
+from lib.datasets import get_qcml_dataset, get_md17_22_dataset
 from lib.loss import LossModule
 from lib.train_loop import Predictor
 from lib.types import DatasetSplits, Split
@@ -26,16 +26,30 @@ from torch import multiprocessing as mp
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from omegaconf import MISSING
 
 pbuilds = partial(builds, zen_partial=True)
 
 qcml_data = pbuilds(
     get_qcml_dataset,
-    data_dir="/home/maxi/MOLECULAR_ML/5_refactored_repo/data_ar",
+    data_dir="./data_ar",
     dataset_name="qcml_unified_fixed_split_by_smiles",
     dataset_version="1.0.0",
     copy_to_temp=True,
 )
+
+md17_benzene = pbuilds(
+    get_md17_22_dataset,
+    data_dir="./data",
+    molecule_name="benzene",
+    splits={"train": 1000, "val": 1000, "test": -1},
+)
+
+
+dataset_store = store(group="dataset")
+dataset_store(qcml_data, name="qcml")
+dataset_store(md17_benzene, name="md17_benzene")
+
 
 loss_module = builds(
     LossModule,
@@ -46,14 +60,14 @@ loss_module = builds(
 )
 
 
-@configure_main(extra_defaults=[])
+@configure_main(extra_defaults=[{"dataset": "qcml"}])
 def main(
     cfg: BaseConfig,  # noqa: ARG001
     model_run_dir: Path,
     loss_module: LossModule | None = loss_module,
     checkpoint_name: str = "best_model",
-    data=qcml_data,
-    batch_size: int = 1024,
+    dataset=MISSING,
+    batch_size: int = 64,
     equivariance_metric: Literal["mse", "mae", "euclidean", "rmse", "huber"] = "euclidean",
     n_random_transforms: int = 128,
     n_samples: int = 50000,
@@ -85,7 +99,7 @@ def main(
     predictor = Predictor(model, loss_module).eval().to(device)
     eval_results = {}
     # data
-    data = data(rank=0, copy_to_temp=False)
+    data = dataset(rank=0, copy_to_temp=False)
     # evaluation
 
     evaluation_metrics = compute_metrics(
@@ -367,4 +381,5 @@ def plot_invariance(model, data, ctx, export_dir, export_name) -> Path:
 
 
 if __name__ == "__main__":
+    dataset_store.add_to_hydra_store()
     run(main)
