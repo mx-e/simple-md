@@ -133,6 +133,7 @@ class Job:
 class SweepJob(Job):
     """Job to run a sweep on a cluster."""
 
+    sweep_id: str = "no_sweep_id"  # for collection of results
     num_workers: int = 2
     parameters: dict[str, list[Any]] = field(default_factory=dict)
     metric_name: str = "loss"

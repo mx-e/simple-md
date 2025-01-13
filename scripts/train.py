@@ -73,7 +73,7 @@ pair_encoder_model = builds(
     norm_first=True,
     norm="layer",
     decomposer_type="pooling",
-    target_heads=["dipole"],
+    target_heads=["forces"],
     head_project_down=True,
     compose_dipole_from_charges=False,
 )
@@ -112,7 +112,7 @@ def train(
     model: nn.Module = pair_encoder_model,
     data: DatasetSplits = qcml_data,
     pipeline_conf: PipelineConfig = pair_encoder_data_config,
-    loss: LossModule = loss_module_dipole,
+    loss: LossModule = loss_module_forces,
     train_loop: Partial[callable] | None = pretrain_loop,
     lr_scheduler: Partial[callable] | None = p_cosine_scheduler,
     ema: Partial[EMAModel] | None = p_ema,

@@ -1,6 +1,8 @@
+from copy import copy
 from functools import partial
 
 import torch as th
+from lib.data.transforms import add_default_charge, add_default_multiplicity
 from lib.types import (
     DatasetSplits,
     PipelineConfig,
@@ -16,6 +18,7 @@ from lib.types import (
 from lib.types import (
     PropertyType as PropsType,
 )
+from loguru import logger
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
@@ -29,19 +32,34 @@ def get_loaders(
     dataset_splits: DatasetSplits,
     pipeline_config: PipelineConfig,
 ) -> dict[Split, DataLoader]:
-    assert all(
-        prop in dataset_splits.dataset_props for prop in pipeline_config.needed_props
-    ), f"Props needed by the model not present in the dataset {list(filter(lambda x: x not in dataset_splits.dataset_props, pipeline_config.needed_props))}"
-    needed_props = {prop: dataset_splits.dataset_props[prop] for prop in pipeline_config.needed_props}
+    additional_preprocessors = []
+    needed_props = copy(pipeline_config.needed_props)
+    missing_props = set(needed_props) - set(dataset_splits.dataset_props.keys())
+    needed_props = {
+        prop: dataset_splits.dataset_props[prop] for prop in needed_props if prop in dataset_splits.dataset_props
+    }
+    if len(missing_props) > 0:
+        logger.warning(f"Props not present in the dataset that are needed by the model {missing_props}")
+        if Props.charge in missing_props:
+            logger.warning("Charge missing, using constant charge of 0")
+            additional_preprocessors.append(add_default_charge)
+            missing_props.remove(Props.charge)
+        if Props.multiplicity in missing_props:
+            logger.warning("Multiplicity missing, using constant multiplicity of 1")
+            additional_preprocessors.append(add_default_multiplicity)
+            missing_props.remove(Props.multiplicity)
+        if missing_props:
+            raise ValueError(f"Missing needed props that cannot be computed or replaced by defaults: {missing_props}")
+
     # shuffle only train data
     samplers = {
         k: DistributedSampler(v, shuffle=(k == Split.train), num_replicas=world_size, rank=rank)
         for k, v in dataset_splits.splits.items()
     }
     batch_func = batch_flat if pipeline_config.collate_type == "flat" else batch_tall
-    assert (
-        batch_size % (world_size * grad_accum_steps * pipeline_config.batch_size_impact) == 0
-    ), "Batch size must be divisible by world_size * grad_accum_steps * pipeline_config.batch_size_impact"
+    assert batch_size % (world_size * grad_accum_steps * pipeline_config.batch_size_impact) == 0, (
+        "Batch size must be divisible by world_size * grad_accum_steps * pipeline_config.batch_size_impact"
+    )
     effective_batch_size = int(batch_size // (pipeline_config.batch_size_impact * world_size * grad_accum_steps))
     loaders = {
         k: DataLoader(
@@ -53,9 +71,9 @@ def get_loaders(
                 props=needed_props,
                 batch_func=batch_func,
                 pre_batch_preprocessors=(
-                    pipeline_config.pre_collate_processors
+                    pipeline_config.pre_collate_processors + additional_preprocessors
                     if k == Split.train
-                    else pipeline_config.pre_collate_processors_val
+                    else pipeline_config.pre_collate_processors_val + additional_preprocessors
                 ),
                 post_batch_preprocessors=(
                     pipeline_config.post_collate_processors

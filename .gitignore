@@ -161,7 +161,7 @@ cython_debug/
 #.idea/
 
 out
-./data
+data
 wandb
 
 outputs

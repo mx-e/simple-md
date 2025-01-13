@@ -24,7 +24,7 @@ class LoadAtomsDataset(Dataset):
     def __getitem__(self, idx) -> dict:
         structure = self.atoms_db[idx]
         sample = {}
-        for k,v in self.data_props.items():
+        for k, v in self.data_props.items():
             if k == Props.forces:
                 sample[v] = convert_force(structure.arrays["forces"], from_unit=self.force_unit, to_unit="Hartree/Bohr")
             elif k == Props.atomic_numbers:
@@ -37,6 +37,7 @@ class LoadAtomsDataset(Dataset):
                 sample[v] = structure.info["dipole"]
 
         return sample
+
 
 def get_anix_dataset(
     rank: int,
@@ -55,7 +56,7 @@ def get_anix_dataset(
             Props.atomic_numbers: Props.atomic_numbers,
             Props.forces: Props.forces,
             Props.positions: Props.positions,
-            Props.dipole: Props.dipole
+            Props.dipole: Props.dipole,
         }
     )
 
@@ -86,6 +87,7 @@ def get_anix_dataset(
         dataset_props=anix_props,
     )
 
+
 def get_rMD17_dataset(
     rank: int,
     data_dir: Path,
@@ -103,7 +105,7 @@ def get_rMD17_dataset(
             Props.atomic_numbers: Props.atomic_numbers,
             Props.forces: Props.forces,
             Props.positions: Props.positions,
-            Props.dipole: Props.dipole
+            Props.dipole: Props.dipole,
         }
     )
 

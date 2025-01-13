@@ -15,6 +15,8 @@ class Transform(Enum):
     compute_neigbourhoods = "compute_neigbourhoods"
     dynamic_batch_size = "dynamic_batch_size"
     augment_positions = "augment_positions"
+    add_default_multiplicity = "add_default_multiplicity"
+    add_default_charge = "add_default_charge"
 
 
 def _apply_molwise_func(batch, func, new_props, **kwargs) -> tuple[dict, list]:
@@ -44,6 +46,16 @@ def center_positions_on_centroid(mol) -> dict:
     centroid = (positions).mean(dim=0, keepdim=True)
     new_positions = positions - centroid
     return {Props.positions: new_positions}
+
+
+@apply_molwise(new_props=[Props.charge])
+def add_default_charge(_) -> dict:
+    return {Props.charge: th.tensor([0], dtype=property_dtype[Props.charge])}
+
+
+@apply_molwise(new_props=[Props.multiplicity])
+def add_default_multiplicity(_) -> dict:
+    return {Props.multiplicity: th.tensor([1], dtype=property_dtype[Props.multiplicity])}
 
 
 @apply_molwise(new_props=[])
@@ -169,6 +181,8 @@ def get_random_reflections(n_samples, device, reflection_share=0.5, eps=1e-9) ->
 pre_collate_transforms = {
     Transform.center_on_centroid: center_positions_on_centroid,
     Transform.compute_neigbourhoods: compute_neigbourhoods,
+    Transform.add_default_charge: add_default_charge,
+    Transform.add_default_multiplicity: add_default_multiplicity,
 }
 
 post_collate_transforms = {
