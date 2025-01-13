@@ -3,6 +3,7 @@ from urllib import request
 
 import numpy as np
 from frozendict import frozendict
+from sklearn.model_selection import train_test_split
 from lib.types import DatasetSplits, Split
 from lib.types import Property as Props
 from loguru import logger
@@ -10,7 +11,7 @@ from lib.datasets.utils import non_overlapping_train_test_val_split
 from torch import distributed as dist
 from torch.utils.data import Subset
 
-from .datasets import NPZDataset
+from lib.datasets.datasets import NPZDataset
 
 md17_props = frozendict(
     {
@@ -73,11 +74,17 @@ def get_md17_22_dataset(
         logger.info(f"Md17 dataset not found, downloading to {data_path}")
         download_md17_22_dataset(data_path, molecule_name)
 
-    dist.barrier()
-    dataset = NPZDataset(file_path, md17_props)
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+    dataset = NPZDataset(file_path, md17_props, force_unit="kcal/(mol·Å)")
 
     index_array = np.arange(len(dataset))
-    train, test, val = non_overlapping_train_test_val_split(splits, index_array, dataset.molecule_ids, seed=seed)
+    train_val, test = train_test_split(
+        index_array, test_size=splits["train"] + splits["val"], random_state=seed
+    )
+    train, val = train_test_split(
+        train_val, test_size=splits["val"], random_state=seed
+    )
 
     datasets = {
         Split.train: Subset(dataset, train),
