@@ -1,19 +1,17 @@
 import hashlib
 import lzma
 import shutil
-import tarfile
 from pathlib import Path
 from urllib import request
 
 import h5py
-import numpy as np
 from ase import Atoms
 from ase.db import connect
 from frozendict import frozendict
+from lib.datasets.utils import non_overlapping_train_test_val_split_hash_based
 from lib.types import DatasetSplits, Split
 from lib.types import Property as Props
 from loguru import logger
-from sklearn.model_selection import train_test_split
 from torch import distributed as dist
 from torch.utils.data import Dataset, Subset
 from tqdm import tqdm
@@ -52,6 +50,10 @@ class ASEAtomsDBDataset(Dataset):
             "energy": properties["energy"],
             "forces": properties["forces"],
         }
+
+    def get_chemical_formula(self, idx) -> str:
+        row = self.conn.get(idx + 1)
+        return row.data["chemical_formula"]
 
 
 def get_qm7x_dataset(
@@ -106,22 +108,30 @@ def get_qm7x_dataset(
         shutil.copy2(permanent_db_path, db_path)
 
     # Wait for rank 0 to finish database operations
-    dist.barrier()
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
 
     # Create dataset from the database
     dataset = ASEAtomsDBDataset(db_path)
 
     # Split dataset
-    index_array = np.arange(len(dataset))
-    train_val_size = splits["train"] + splits["val"]
-    train_val, test = train_test_split(index_array, test_size=splits["test"], random_state=seed)
-    train_size = splits["train"] / train_val_size
-    train, val = train_test_split(train_val, test_size=1 - train_size, random_state=seed)
+    logger.info("Splitting dataset...")
+    # load molecule names from db_path
+    if not Path.exists(db_path.with_suffix(".txt")):
+        molecule_names = [dataset.get_chemical_formula(i) for i in tqdm(range(len(dataset)))]
+        with Path.open(db_path.with_suffix(".txt"), "w") as f:
+            f.write("\n".join(molecule_names))
+    else:
+        molecule_names = [line.rstrip("\n") for line in Path.open(db_path.with_suffix(".txt"), "r")]
+
+    train_idx, test_idx, val_idx = non_overlapping_train_test_val_split_hash_based(
+        splits, molecule_names, seed
+    )
 
     datasets = {
-        Split.train: Subset(dataset, train),
-        Split.val: Subset(dataset, val),
-        Split.test: Subset(dataset, test),
+        Split.train: Subset(dataset, train_idx),
+        Split.val: Subset(dataset, val_idx),
+        Split.test: Subset(dataset, test_idx),
     }
 
     return DatasetSplits(
@@ -141,6 +151,7 @@ def create_ase_db_from_qm7x(hdf5_files: list[Path], db_path: Path, duplicates_id
     logger.info("Creating ASE database from QM7-X data files...")
 
     # Create database connection
+    chemical_formulas = []
     with connect(db_path) as db:
         # Process each HDF5 file
         for file_path in hdf5_files:
@@ -166,8 +177,16 @@ def create_ase_db_from_qm7x(hdf5_files: list[Path], db_path: Path, duplicates_id
                             if qm7x_key in conf:
                                 properties[prop_name] = conf[qm7x_key][:]
 
+                        # add sum formula to properties
+                        properties["chemical_formula"] = atoms.get_chemical_formula()
+                        chemical_formulas.append(properties["chemical_formula"])
+
                         # Write to database
                         db.write(atoms, data=properties)
+
+    # save chemical formulas to a file
+    with Path.open(db_path.with_suffix(".txt"), "w") as f:
+        f.write("\n".join(chemical_formulas))
 
     logger.info(f"Database created at {db_path}")
     logger.info(f"Total entries: {db.count()}")

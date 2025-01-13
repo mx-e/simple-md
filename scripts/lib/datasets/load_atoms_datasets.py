@@ -1,15 +1,15 @@
 from pathlib import Path
-from load_atoms import load_dataset, AtomsDataset
 
 import numpy as np
 from frozendict import frozendict
+from lib.datasets.utils import non_overlapping_train_test_val_split_hash_based
 from lib.types import DatasetSplits, Split
 from lib.types import Property as Props
-from lib.datasets.utils import non_overlapping_train_test_val_split
-from loguru import logger
-from torch import distributed as dist
-from torch.utils.data import Subset, Dataset
+from load_atoms import AtomsDataset, load_dataset
 from sklearn.preprocessing import OrdinalEncoder
+from torch import distributed as dist
+from torch.utils.data import Dataset, Subset
+
 
 class LoadAtomsDataset(Dataset):
     def __init__(self, atoms_db: AtomsDataset, data_props: Props, group: np.array) -> None:
@@ -34,7 +34,7 @@ class LoadAtomsDataset(Dataset):
                 sample[v] = structure.info["energy"]
             elif k == Props.dipole:
                 sample[v] = structure.info["dipole"]
-            
+
         return sample
 
 def get_anix_dataset(
@@ -43,7 +43,7 @@ def get_anix_dataset(
     molecule_name: str,
     splits: dict[str, float] | None = None,
     seed: int = 42,
-):
+) -> DatasetSplits:
     if splits is None:
         splits = {"train": 0.5, "val": 0.3, "test": 0.2}
     data_path = data_dir / "anix"
@@ -57,7 +57,7 @@ def get_anix_dataset(
             Props.dipole: Props.dipole
         }
     )
-    
+
     if rank == 0:
         load_dataset("ANI-1x", root=data_path)
 
@@ -66,21 +66,66 @@ def get_anix_dataset(
 
     dataset = load_dataset("ANI-1x", root=data_path)
 
-    names = []
-    for idx, structure in enumerate(dataset):
-        names.append(structure.get_chemical_formula())
+    names = [structure.get_chemical_formula() for structure in dataset]
     # encode string names to unique integers
+    molecule_names = np.array(names)
     molecule_ids = OrdinalEncoder().fit_transform(np.array(names).reshape(-1, 1)).reshape(-1)
     dataset = LoadAtomsDataset(dataset, anix_props, molecule_ids)
 
-    index_array = np.arange(len(dataset))
-    test, train, val = non_overlapping_train_test_val_split(splits, index_array, molecule_ids, seed=seed)
-
+    train_idx, test_idx, val_idx = non_overlapping_train_test_val_split_hash_based(splits, molecule_names, seed=seed)
 
     datasets = {
-        Split.train: Subset(dataset, train),
-        Split.val: Subset(dataset, val),
-        Split.test: Subset(dataset, test),
+        Split.train: Subset(dataset, train_idx),
+        Split.val: Subset(dataset, val_idx),
+        Split.test: Subset(dataset, test_idx),
+    }
+
+    return DatasetSplits(
+        splits=datasets,
+        dataset_props=anix_props,
+    )
+
+def get_rMD17_dataset(
+    rank: int,
+    data_dir: Path,
+    molecule_name: str,
+    splits: dict[str, float] | None = None,
+    seed: int = 40,
+) -> DatasetSplits:
+    if splits is None:
+        splits = {"train": 0.5, "val": 0.3, "test": 0.2}
+    data_path = data_dir / "rMD17"
+
+    anix_props = frozendict(
+        {
+            Props.energy: Props.energy,
+            Props.atomic_numbers: Props.atomic_numbers,
+            Props.forces: Props.forces,
+            Props.positions: Props.positions,
+            Props.dipole: Props.dipole
+        }
+    )
+
+    if rank == 0:
+        load_dataset("rMD17", root=data_path)
+
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+
+    dataset = load_dataset("rMD17", root=data_path)
+
+    names = [structure.get_chemical_formula() for structure in dataset]
+    # encode string names to unique integers
+    molecule_names = np.array(names)
+    molecule_ids = OrdinalEncoder().fit_transform(np.array(names).reshape(-1, 1)).reshape(-1)
+    dataset = LoadAtomsDataset(dataset, anix_props, molecule_ids)
+
+    train_idx, test_idx, val_idx = non_overlapping_train_test_val_split_hash_based(splits, molecule_names, seed=seed)
+
+    datasets = {
+        Split.train: Subset(dataset, train_idx),
+        Split.val: Subset(dataset, val_idx),
+        Split.test: Subset(dataset, test_idx),
     }
 
     return DatasetSplits(
