@@ -80,8 +80,6 @@ def get_rmd17_dataset(
 
     dataset = NPZDataset(file_path, props=rmd17_props, force_unit="kcal/(mol·Å)")
 
-    print(dataset[0])
-
     index_array = np.arange(len(dataset))
     train_val, test = train_test_split(
         index_array, test_size=splits["train"] + splits["val"], random_state=seed
