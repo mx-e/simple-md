@@ -55,7 +55,7 @@ def download_rmd17_dataset(dataset_path: Path) -> None:
     logger.info("Extracted data & deleted raw data")
 
 
-def get_md17_22_dataset(
+def get_rmd17_dataset(
     rank: int,
     data_dir: Path,
     molecule_name: str,
@@ -78,7 +78,9 @@ def get_md17_22_dataset(
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
 
-    dataset = NPZDataset(file_path, props=rmd17_props, force_unit="Hartree/Bohr")
+    dataset = NPZDataset(file_path, props=rmd17_props, force_unit="kcal/(mol·Å)")
+
+    print(dataset[0])
 
     index_array = np.arange(len(dataset))
     train_val, test = train_test_split(
@@ -99,4 +101,4 @@ def get_md17_22_dataset(
         dataset_props=rmd17_props,
     )
 
-get_md17_22_dataset(0, Path("."), "aspirin")
+get_rmd17_dataset(0, Path("."), "aspirin")
