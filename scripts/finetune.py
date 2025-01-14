@@ -11,7 +11,7 @@ from conf.base_conf import BaseConfig, configure_main
 from hydra_zen import builds, instantiate, load_from_yaml, store
 from hydra_zen.typing import Partial
 from lib.data.loaders import get_loaders
-from lib.datasets import get_qcml_dataset, get_rmd17_dataset
+from lib.datasets import get_qcml_dataset, get_rmd17_dataset, get_la_rmd17_dataset, get_qm7x_pbe0_dataset, get_qm7x_dataset
 from lib.ema import EMAModel
 from lib.loss import LossModule
 from lib.lr_scheduler import LRScheduler, get_lr_scheduler
@@ -59,8 +59,8 @@ loss_module_forces = builds(
     LossModule,
     targets=["forces"],
     loss_types={"forces": "euclidean"},
-    metrics={"forces": ["mae", "mse", "euclidean"]},
-    compute_metrics_train=False,
+    metrics={"forces": ["mae", "mse", "euclidean", "cosine"]},
+    compute_metrics_train=True,
 )
 pair_encoder_data_config = builds(
     get_pair_encoder_pipeline_config,
@@ -83,21 +83,55 @@ ft_loop = pbuilds(
 
 qcml_data = pbuilds(
     get_qcml_dataset,
-    data_dir="./data_ar",
-    dataset_name="qcml_unified_fixed_split_by_smiles",
+    data_dir="/data/data_arrecord",
+    dataset_name="qcml_fixed_split_by_smiles",
     dataset_version="1.0.0",
     copy_to_temp=True,
 )
 
 md17_aspirin = pbuilds(
     get_rmd17_dataset,
-    data_dir="./data",
-    molecule_name="aspirin",
+    data_dir="/temp_data",
+    molecule_name="benzene",
     splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
+
+md17_aspirin = pbuilds(
+    get_rmd17_dataset,
+    data_dir="/temp_data",
+    molecule_name="benzene",
+    splits={"train": 0.8, "val": 0.1, "test": 0.1},
+)
+
+md17_benzene_v2 = pbuilds(
+    get_la_rmd17_dataset,
+    data_dir="/temp_data",
+    molecule_name="benzene",
+    splits={"train": 0.8, "val": 0.1, "test": 0.1},
+)
+
+qm7x_pbe0_data = pbuilds(
+    get_qm7x_pbe0_dataset,
+    data_dir="/data/qm7x_pbe0",
+    dataset_name="qm7x_pbe0",
+    dataset_version="1.0.0",
+    copy_to_temp=True,
+)
+
+qm7x_data = pbuilds(
+    get_qm7x_dataset,
+    data_dir="/temp_data",
+    splits={"train": 0.8, "val": 0.1, "test": 0.1},
+)
+
+
+
 dataset_store = store(group="ft/dataset")
 dataset_store(qcml_data, name="qcml")
 dataset_store(md17_aspirin, name="md17_aspirin")
+dataset_store(md17_benzene_v2, name="md17_benzene_v2")
+dataset_store(qm7x_pbe0_data, name="qm7x_pbe0")
+dataset_store(qm7x_data, name="qm7x")
 
 
 def finetune(
