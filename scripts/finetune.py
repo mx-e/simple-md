@@ -44,7 +44,7 @@ p_no_scheduler = pbuilds(get_lr_scheduler)
 p_cosine_scheduler = pbuilds(
     get_lr_scheduler,
     scheduler_type="cosine_warmup",
-    warmup_steps=5000,
+    warmup_steps=0,
     min_lr=1e-7,
 )
 loss_module_dipole = builds(
@@ -57,7 +57,7 @@ loss_module_dipole = builds(
 loss_module_forces = builds(
     LossModule,
     targets=["forces"],
-    loss_types={"forces": "mse"},
+    loss_types={"forces": "euclidean"},
     metrics={"forces": ["mae", "mse", "euclidean"]},
     compute_metrics_train=False,
 )
@@ -88,15 +88,15 @@ qcml_data = pbuilds(
     copy_to_temp=True,
 )
 
-md17_benzene = pbuilds(
+md17_aspirin = pbuilds(
     get_rmd17_dataset,
     data_dir="./data",
-    molecule_name="benzene",
+    molecule_name="aspirin",
     splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 dataset_store = store(group="ft/dataset")
 dataset_store(qcml_data, name="qcml")
-dataset_store(md17_benzene, name="md17_benzene")
+dataset_store(md17_aspirin, name="md17_aspirin")
 
 
 def finetune(
@@ -109,9 +109,9 @@ def finetune(
     dataset=MISSING,
     optimizer: Partial[th.optim.Optimizer] = p_optim,
     train_loop: Partial[callable] = ft_loop,
-    batch_size: int = 32,
+    batch_size: int = 128,
     total_steps: int = 220_000,
-    lr: float = 1e-4,
+    lr: float = 5e-5,
     grad_accum_steps: int = 1,
     lr_scheduler: Partial[callable] | None = p_cosine_scheduler,  # None = No schedule
     loss: LossModule | None = loss_module_forces,  # None = Same as pretrain

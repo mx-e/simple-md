@@ -1,29 +1,30 @@
 import numpy as np
-from sklearn.model_selection import GroupShuffleSplit
-
-from tools.preprocess_fixed_splits_qcml import get_split_hash
 from loguru import logger
+from sklearn.model_selection import GroupShuffleSplit
+from tools.preprocess_fixed_splits_qcml import get_split_hash
 
 
 def non_overlapping_train_test_val_split(
-        splits: dict[str, float],
-        groups: np.array, seed: int=42
-    ) -> tuple[np.array, np.array, np.array]:
+    splits: dict[str, float], groups: np.array, seed: int = 42
+) -> tuple[np.array, np.array, np.array]:
     index_array = np.arange(len(groups))
-    gss = GroupShuffleSplit(n_splits=1, test_size=splits["train"] + splits["val"], random_state=seed).split(index_array, index_array, groups=groups)
+    gss = GroupShuffleSplit(n_splits=1, test_size=splits["train"] + splits["val"], random_state=seed).split(
+        index_array, index_array, groups=groups
+    )
     train_val, test = next(gss)
 
-    gss = GroupShuffleSplit(n_splits=1, test_size=splits["val"], random_state=seed).split(train_val, train_val, groups=groups[train_val])
+    gss = GroupShuffleSplit(n_splits=1, test_size=splits["val"], random_state=seed).split(
+        train_val, train_val, groups=groups[train_val]
+    )
     train_idx, val_idx = next(gss)
     train = train_val[train_idx]
     val = train_val[val_idx]
-    return test,train,val
+    return test, train, val
+
 
 def non_overlapping_train_test_val_split_hash_based(
-        splits: dict[str, float],
-        groups: np.array, seed: int=42
-    ) -> tuple[np.array, np.array, np.array]:
-
+    splits: dict[str, float], groups: np.array, seed: int = 42
+) -> tuple[np.array, np.array, np.array]:
     hash_val = get_split_hash(groups, seed).numpy()
 
     train_idxs = np.where(hash_val < splits["train"])[0]
@@ -43,7 +44,26 @@ def non_overlapping_train_test_val_split_hash_based(
 
     return train_idxs, test_idxs, val_idxs
 
-def convert_force(force_value: float, from_unit: str, to_unit: str="Hartree/Bohr") -> float:
+
+def convert_coordinates(positions: np.ndarray, from_unit: str, to_unit: str = "Bohr") -> np.ndarray:
+    conversion_to_bohr = {
+        "Bohr": 1.0,
+        "Å": 1.8897259,
+    }
+
+    if from_unit not in conversion_to_bohr:
+        raise ValueError(f"Input unit '{from_unit}' not recognized.")
+
+    pos_bohr = positions * conversion_to_bohr[from_unit]
+
+    if to_unit == "Bohr":
+        return pos_bohr
+
+    else:
+        raise ValueError(f"Output unit '{to_unit}' not supported.")
+
+
+def convert_force(force_value: float, from_unit: str, to_unit: str = "Hartree/Bohr") -> float:
     """Convert a force value from a given 'from_unit' to the specified 'to_unit'.
     Valid to_unit options here are 'Hartree/Bohr' or 'Hartree/Å'.
 
@@ -59,7 +79,7 @@ def convert_force(force_value: float, from_unit: str, to_unit: str="Hartree/Bohr
           - 'Hartree/Bohr'
           - 'Hartree/Å'
     to_unit : str
-        Desired output force unit. 
+        Desired output force unit.
         Options: 'Hartree/Bohr' or 'Hartree/Å'
 
     Returns
@@ -69,11 +89,11 @@ def convert_force(force_value: float, from_unit: str, to_unit: str="Hartree/Bohr
     """
     # First convert from the input unit to "Hartree/Bohr" as an internal standard.
     conversion_to_hartree_bohr = {
-        "eV/Å":           0.019447,
-        "kcal/(mol·Å)":   0.000844,
-        "kJ/(mol·Å)":     0.000202,
-        "Hartree/Bohr":   1.0,
-        "Hartree/Å":      1.0 / 0.52917721067,  # 1 / (Bohr in Å)
+        "eV/Å": 0.019447,
+        "kcal/(mol·Å)": 0.0008432982619,
+        "kJ/(mol·Å)": 0.000202,
+        "Hartree/Bohr": 1.0,
+        "Hartree/Å": 1.0 / 0.52917721067,  # 1 / (Bohr in Å)
     }
 
     if from_unit not in conversion_to_hartree_bohr:
@@ -94,4 +114,3 @@ def convert_force(force_value: float, from_unit: str, to_unit: str="Hartree/Bohr
 
     else:
         raise ValueError(f"Output unit '{to_unit}' not supported.")
-
