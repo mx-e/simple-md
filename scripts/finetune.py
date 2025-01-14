@@ -1,6 +1,7 @@
 #! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data --bind /home/bbdc2/quantum/max/:/data container.sif python
 from functools import partial
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch as th
@@ -16,18 +17,18 @@ from lib.loss import LossModule
 from lib.lr_scheduler import LRScheduler, get_lr_scheduler
 from lib.models import PairEncoder, get_pair_encoder_pipeline_config
 from lib.models.pair_encoder import NodeLevelRegressionHead
-from lib.train_loop import Predictor, train_loop
-from lib.types import PipelineConfig
-from lib.types import Property as DatasetSplits
-from lib.types import Property as Props
+from lib.train_loop import Predictor, evaluate, train_loop
+from lib.types import PipelineConfig, Split
 from lib.utils.checkpoint import load_checkpoint, save_checkpoint
-from lib.utils.dist import cleanup_dist, setup_device, setup_dist
+from lib.utils.dist import cleanup_dist, get_amp, setup_device, setup_dist
 from lib.utils.helpers import get_hydra_output_dir
 from lib.utils.run import run
 from loguru import logger
+from omegaconf import MISSING
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel as DDP
-from omegaconf import MISSING
+
+import wandb
 
 pbuilds = partial(builds, zen_partial=True)
 pbuilds_full = partial(builds, zen_partial=True, populate_full_signature=True)
@@ -43,7 +44,7 @@ p_ema = pbuilds(
 p_no_scheduler = pbuilds(get_lr_scheduler)
 p_cosine_scheduler = pbuilds(
     get_lr_scheduler,
-    scheduler_type="cosine_warmup",
+    scheduler_type="none",
     warmup_steps=0,
     min_lr=1e-7,
 )
@@ -73,7 +74,7 @@ pair_encoder_data_config = builds(
 ft_loop = pbuilds(
     train_loop,
     log_interval=5,
-    eval_interval=5000,
+    eval_interval=20,
     save_interval=50000,
     eval_samples=50000,
     clip_grad=1.0,
@@ -109,11 +110,15 @@ def finetune(
     dataset=MISSING,
     optimizer: Partial[th.optim.Optimizer] = p_optim,
     train_loop: Partial[callable] = ft_loop,
+    finetune_type: Literal["head_only", "full"] = "full",
+    train_size: Literal["zero_shot", "few_shot", "full"] = "few_shot",
+    few_shot_size: int = 1000,
     batch_size: int = 128,
-    total_steps: int = 220_000,
+    total_steps: int = 1000,
+    final_eval_samples: int = 50000,
     lr: float = 5e-5,
     grad_accum_steps: int = 1,
-    lr_scheduler: Partial[callable] | None = p_cosine_scheduler,  # None = No schedule
+    lr_scheduler: Partial[callable] | None = None,  # None = No schedule
     loss: LossModule | None = loss_module_forces,  # None = Same as pretrain
     pipeline_conf: PipelineConfig | None = pair_encoder_data_config,  # None = Same as pretrain
     ema: Partial[EMAModel] | None = None,  # None = No EMA
@@ -122,7 +127,7 @@ def finetune(
     try:
         device = setup_device(rank)
 
-        # get model + loss + optim
+        # get model + loss
         config_path = pretrain_model_dir / ".hydra" / "config.yaml"
         conf = load_from_yaml(config_path)
         model_conf = conf["train"]["model"]
@@ -144,12 +149,6 @@ def finetune(
             ema = None
         total_params = sum(p.numel() for p in model.parameters())
         logger.info(f"Total model parameters: {total_params}")
-        optimizer = optimizer(model.parameters(), lr=lr)
-        lr_scheduler = (
-            lr_scheduler(optimizer, lr, lr_decay_steps=total_steps)
-            if lr_scheduler is not None
-            else LRScheduler(optimizer, lr)
-        )
 
         # handle cross-objective finetuning
         loss_pretrain = instantiate(conf["train"]["loss"])
@@ -177,6 +176,16 @@ def finetune(
                 pipeline_conf.needed_props.append(target)
             model = DDP(model.module, **ddp_args)  # rewrap model after modification
 
+        match finetune_type:  # optim + lr_scheduler
+            case "head_only":
+                optim = optimizer(model.module.encoder.heads.parameters())
+            case "full":
+                optim = optimizer(model.parameters(), lr=lr)
+
+        lr_scheduler = (
+            lr_scheduler(optim, lr, lr_decay_steps=total_steps) if lr_scheduler is not None else LRScheduler(optim, lr)
+        )
+
         # data + loaders
         data = dataset(rank)
         if pipeline_conf is None:
@@ -195,29 +204,78 @@ def finetune(
             device=device,
             dataset_splits=data,
             pipeline_config=pipeline_conf,
+            restrict_train_size=few_shot_size if train_size == "few_shot" else None,
+            num_workers=0,
         )
+        logger.info(f"Train samples: {len(loaders[Split.train].dataset)}")
+        logger.info(f"Val samples: {len(loaders[Split.val].dataset)}")
+        logger.info(f"Test samples: {len(loaders[Split.test].dataset)}")
+        if train_size != "zero_shot":
+            logger.info(f"Finetuning on {train_size} data with {few_shot_size} samples")
+            final_model = train_loop(
+                rank=rank,
+                model=model,
+                loaders=loaders,
+                optimizer=optim,
+                save_dir=cfg.runtime.out_dir / "ckpts",
+                start_step=0,
+                total_steps=total_steps,
+                grad_accum_steps=grad_accum_steps,
+                lr_scheduler=lr_scheduler,
+                ema=ema,
+                wandb=cfg.wandb,
+            )
+        else:
+            logger.info("Zero-shot finetuning - skipping training")
+            final_model = model
 
-        final_model = train_loop(
-            rank=rank,
-            model=model,
-            loaders=loaders,
-            optimizer=optimizer,
-            save_dir=cfg.runtime.out_dir / "ckpts",
-            start_step=0,
-            total_steps=total_steps,
-            grad_accum_steps=grad_accum_steps,
-            lr_scheduler=lr_scheduler,
-            ema=ema,
-            wandb=cfg.wandb,
-        )
+        # evaluation
+        if dist.is_initialized():
+            dist.barrier()
+        if rank == 0:
+            amp = get_amp("float32")
+            val_results = evaluate(
+                model=final_model,
+                loader=loaders[Split.val],
+                ctx=amp,
+                ema=ema,
+                eval_samples=final_eval_samples,
+            )
+            test_results = evaluate(
+                model=final_model,
+                loader=loaders[Split.test],
+                ctx=amp,
+                ema=ema,
+                eval_samples=final_eval_samples,
+            )
+            # save model and results
+            if cfg.wandb is not None:
+                results_data = [[metric_name, metric, "val"] for metric_name, metric in val_results.items()] + [
+                    [metric_name, metric, "test"] for metric_name, metric in test_results.items()
+                ]
+                results_table = wandb.Table(
+                    columns=["metric", "value", "split"],
+                    data=results_data,
+                )
 
-        save_checkpoint(
-            final_model.module.encoder,
-            optimizer,
-            total_steps,
-            cfg.runtime.out_dir / "ckpts" / "model_final.pth",
-            ema,
-        )
+                eval_artifact = wandb.Artifact(f"eval_results_{wandb.run.id}", type="evaluation")
+                eval_artifact.add(results_table, "results_table")
+                eval_artifact.add(wandb.Data(data=val_results, type="val_results"), "val_results")
+                eval_artifact.add(wandb.Data(data=test_results, type="test_results"), "test_results")
+                cfg.wandb.run.log_artifact(eval_artifact)
+
+                for metric_name, metric in val_results.items():
+                    cfg.wandb.run.summary[f"final_val/{metric_name}"] = metric
+                for metric_name, metric in test_results.items():
+                    cfg.wandb.run.summary[f"final_test/{metric_name}"] = metric
+
+            save_checkpoint(
+                final_model.module.encoder,
+                optimizer,
+                total_steps,
+                cfg.runtime.out_dir / "ckpts" / "model_final.pth",
+                ema,
+            )
     finally:
         cleanup_dist()
 

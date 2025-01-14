@@ -31,6 +31,8 @@ def get_loaders(
     device,
     dataset_splits: DatasetSplits,
     pipeline_config: PipelineConfig,
+    restrict_train_size: int = None,
+    num_workers: int = 4,
 ) -> dict[Split, DataLoader]:
     additional_preprocessors = []
     needed_props = copy(pipeline_config.needed_props)
@@ -50,6 +52,10 @@ def get_loaders(
             missing_props.remove(Props.multiplicity)
         if missing_props:
             raise ValueError(f"Missing needed props that cannot be computed or replaced by defaults: {missing_props}")
+    if restrict_train_size is not None:
+        dataset_splits.splits[Split.train] = th.utils.data.Subset(
+            dataset_splits.splits[Split.train], range(restrict_train_size)
+        )
 
     # shuffle only train data
     samplers = {
@@ -82,7 +88,7 @@ def get_loaders(
                 ),
                 device=device,
             ),
-            num_workers=4,
+            num_workers=num_workers,
         )
         for k, ds in dataset_splits.splits.items()
     }

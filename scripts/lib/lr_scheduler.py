@@ -5,7 +5,7 @@ from loguru import logger
 
 
 class LRScheduler:
-    def __init__(self, optimizer, lr) -> None:
+    def __init__(self, optimizer, lr, **_) -> None:
         self.optimizer = optimizer
         self.lr = optimizer.param_groups[0]["lr"]
         self.initial_lr = lr
