@@ -29,18 +29,18 @@ __pbar = None
 
 
 class ASEAtomsDBDataset(Dataset):
-    def __init__(self, db_path: Path, force_unit: str, distance_unit: str) -> None:
+    def __init__(self, db_path: Path, force_unit: str, coordinate_unit: str) -> None:
         self.db_path = db_path
         self.conn = connect(self.db_path, use_lock_file=False)
         self.force_unit = force_unit
-        self.distance_unit = distance_unit
+        self.coordinate_unit = coordinate_unit
 
     def __len__(self) -> int:
         return self.conn.count()
 
     def __getitem__(self, idx) -> dict:
         # ASE DB uses 1-based indexing
-        row = self.conn.get(idx + 1)
+        row = self.conn.get(int(idx + 1))
         Z = row.numbers
         positions = row.positions
         # properties
@@ -48,7 +48,7 @@ class ASEAtomsDBDataset(Dataset):
 
         return {
             "Z": Z,
-            "positions": convert_coordinates(positions, from_unit=self.distance_unit, to_unit="Bohr"), 
+            "positions": convert_coordinates(positions, from_unit=self.coordinate_unit, to_unit="Bohr"), 
             "energy": properties["energy"],
             "forces": convert_force(properties["forces"], from_unit=self.force_unit, to_unit="Hartree/Bohr"),
         }
@@ -114,7 +114,7 @@ def get_qm7x_dataset(
         dist.barrier()
 
     # Create dataset from the database
-    dataset = ASEAtomsDBDataset(db_path, force_unit="eV/Å", coord_unit="Å")
+    dataset = ASEAtomsDBDataset(db_path, force_unit="eV/Å", coordinate_unit="Å")
 
     # Split dataset
     logger.info("Splitting dataset...")

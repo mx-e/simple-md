@@ -112,8 +112,8 @@ md17_benzene_v2 = pbuilds(
 
 qm7x_pbe0_data = pbuilds(
     get_qm7x_pbe0_dataset,
-    data_dir="/data/qm7x_pbe0",
-    dataset_name="qm7x_pbe0",
+    data_dir="/data/data_arrecord",
+    dataset_name="qm7x_pbe0_split_by_smiles/",
     dataset_version="1.0.0",
     copy_to_temp=True,
 )
