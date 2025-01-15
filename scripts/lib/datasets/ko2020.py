@@ -1,17 +1,31 @@
-from pathlib import Path
-from typing import Dict, List
-
-import numpy as np
-from ase import Atoms
-from ase.data import atomic_numbers
-from ase.db import connect
-from loguru import logger
-import requests
 import shutil
 import tarfile
+from pathlib import Path
+
+import numpy as np
+import requests
+from ase.data import atomic_numbers
+from frozendict import frozendict
+from lib.datasets.datasets import NPZDataset
+from lib.types import DatasetSplits, Split
+from lib.types import Property as Props
+from loguru import logger
+from sklearn.model_selection import train_test_split
+from torch import distributed as dist
+from torch.utils.data import Subset
+
+ko2020_props = frozendict(
+    {
+        Props.energy: "energy",
+        Props.forces: "forces",
+        Props.positions: "positions",
+        Props.atomic_numbers: "atomic_numbers",
+        Props.charge: "charges",
+    }
+)
 
 
-def read_runner_configurations(file_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def read_runner_configurations(file_path: Path) -> tuple[list, list, np.ndarray, np.ndarray, np.ndarray]:
     with file_path.open() as f:
         content = f.read()
 
@@ -23,7 +37,7 @@ def read_runner_configurations(file_path: Path) -> tuple[np.ndarray, np.ndarray,
     all_positions = []
     all_forces = []
     all_energies = []
-    all_charges = []  # Added for molecular charges
+    all_charges = []
     atomic_nums = None
 
     for config in configs:
@@ -33,7 +47,7 @@ def read_runner_configurations(file_path: Path) -> tuple[np.ndarray, np.ndarray,
         positions = []
         forces = []
         energy = None
-        charge = None  # For molecular charge
+        charge = None
         symbols = []
 
         for line in config.split("\n"):
@@ -51,29 +65,36 @@ def read_runner_configurations(file_path: Path) -> tuple[np.ndarray, np.ndarray,
         if atomic_nums is None:
             atomic_nums = np.array([atomic_numbers[sym] for sym in symbols])
 
-        all_positions.append(positions)
-        all_forces.append(forces)
+        all_positions.append(np.array(positions))
+        all_forces.append(np.array(forces))
         all_energies.append(energy)
         all_charges.append(charge)
 
-    # Convert to numpy arrays
-    positions_array = np.array(all_positions)  # Shape: (n_configs, n_atoms, 3)
-    forces_array = np.array(all_forces)  # Shape: (n_configs, n_atoms, 3)
-    energies_array = np.array(all_energies)  # Shape: (n_configs,)
-    charges_array = np.array(all_charges)  # Shape: (n_configs,)
+    # Convert to arrays where appropriate (not for ragged arrays)
+    energies_array = np.array(all_energies)
+    charges_array = np.array(all_charges)
 
-    return positions_array, forces_array, energies_array, atomic_nums, charges_array
+    logger.info(
+        f"Number of atoms per molecule: min={min(len(pos) for pos in all_positions)}, "
+        f"max={max(len(pos) for pos in all_positions)}"
+    )
+
+    return all_positions, all_forces, energies_array, atomic_nums, charges_array
 
 
 def convert_runner_to_npz(source_path: Path, target_path: Path) -> None:
     # Read configurations
     positions, forces, energies, atomic_numbers, charges = read_runner_configurations(source_path)
 
+    # Convert to object arrays for ragged data
+    positions_array = np.array(positions, dtype=object)
+    forces_array = np.array(forces, dtype=object)
+
     # Save as NPZ file
     np.savez(
         target_path,
-        positions=positions,
-        forces=forces,
+        positions=positions_array,
+        forces=forces_array,
         energy=energies,
         atomic_numbers=atomic_numbers,
         charges=charges,
@@ -83,8 +104,8 @@ def convert_runner_to_npz(source_path: Path, target_path: Path) -> None:
     logger.info(f"Converted {source_path} to {target_path}")
     logger.info(f"Dataset contains {len(energies)} configurations")
     logger.info("Data shapes:")
-    logger.info(f"  Positions: {positions.shape}")
-    logger.info(f"  Forces: {forces.shape}")
+    logger.info(f"  Positions: array of shape ({len(positions)},) containing arrays of shape (n_atoms, 3)")
+    logger.info(f"  Forces: array of shape ({len(forces)},) containing arrays of shape (n_atoms, 3)")
     logger.info(f"  Energies: {energies.shape}")
     logger.info(f"  Atomic numbers: {atomic_numbers.shape}")
     logger.info(f"  Molecular charges: {charges.shape}")
@@ -111,9 +132,29 @@ def download_and_extract_dataset(raw_folder: Path) -> None:
     logger.info(f"Dataset downloaded and extracted to {raw_folder}")
 
 
+dataset_rel_paths = frozendict(
+    {
+        "Ag_cluster": "datasets/Ag_cluster/input.data",
+        "AuMgO": "datasets/AuMgO/input.data",
+        "Carbon_chain": "datasets/Carbon_chain/input.data",
+        "NaCl": "datasets/NaCl/input.data",
+    }
+)
+
+dataset_filenames = frozendict(
+    {
+        "Ag_cluster": "Ag_cluster.npz",
+        "AuMgO": "AuMgO.npz",
+        "Carbon_chain": "Carbon_chain.npz",
+        "NaCl": "NaCl.npz",
+    }
+)
+
+
 def get_ko2020_dataset(
     rank: int,
     data_dir: Path,
+    molecule_name: str,
     workdir: Path | None = None,
     splits: dict[str, float] | None = None,
     seed: int = 42,
@@ -121,11 +162,42 @@ def get_ko2020_dataset(
     if splits is None:
         splits = {"train": 0.5, "val": 0.3, "test": 0.2}
 
+    assert molecule_name in dataset_filenames, (
+        f"Unknown molecule {molecule_name=}, expected one of {dataset_filenames.keys()}"
+    )
+
     working_path = workdir if workdir is not None else data_dir
+    npz_dir = data_dir / "ko2020"
+    npz_file_path = npz_dir / dataset_filenames[molecule_name]
+    out_file_paths = {k: npz_dir / v for k, v in dataset_filenames.items()}
 
-    raw_dir = working_path / "ko2020" / "raw"
-    db_dir = data_dir / "ko2020"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    db_dir.mkdir(parents=True, exist_ok=True)
+    if not npz_file_path.exists() and rank == 0:
+        logger.info(f"KO2020-{molecule_name} not found, downloading to {working_path}")
+        raw_dir = working_path / "ko2020" / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        npz_dir.mkdir(parents=True, exist_ok=True)
 
-    permanent_db_path = db_dir / "ko2020.db"
+        download_and_extract_dataset(raw_dir)
+        raw_file_paths = {k: raw_dir / v for k, v in dataset_rel_paths.items()}
+        for mol, raw_path in raw_file_paths.items():
+            convert_runner_to_npz(raw_path, out_file_paths[mol])
+
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+    dataset = NPZDataset(out_file_paths[molecule_name], ko2020_props, force_unit="kcal/(mol·Å)", coord_unit="Å")
+
+    ds_len = len(dataset)
+    index_array = np.arange(ds_len)
+    train_val, test = train_test_split(index_array, test_size=int(ds_len * splits["test"]), random_state=seed)
+    train, val = train_test_split(train_val, test_size=int(ds_len * splits["val"]), random_state=seed)
+
+    datasets = {
+        Split.train: Subset(dataset, train),
+        Split.val: Subset(dataset, val),
+        Split.test: Subset(dataset, test),
+    }
+
+    return DatasetSplits(
+        splits=datasets,
+        dataset_props=ko2020_props,
+    )

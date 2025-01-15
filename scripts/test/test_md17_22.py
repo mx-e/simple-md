@@ -6,7 +6,7 @@ from lib.datasets.md17_22 import _filenames, download_md17_22_dataset, md17_prop
 from loguru import logger
 
 
-def test_multiple_md17_mols(tmp_path: Path) -> dict:
+def test_multiple_md17_mols(tmp_path: Path) -> None:
     # Let's test a subset of molecules with different sizes
     test_molecules = {
         "aspirin": 21,  # 21 atoms

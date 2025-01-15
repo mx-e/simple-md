@@ -1,7 +1,8 @@
 import pytest
 from pathlib import Path
 from lib.datasets.load_atoms_datasets import get_anix_dataset
-from scripts.lib.types import Split
+from lib.types import Split, Property as Props
+
 
 def test_get_anix_dataset(tmp_path: Path):
     data_dir = tmp_path / "data"
@@ -20,6 +21,7 @@ def test_get_anix_dataset(tmp_path: Path):
     assert dataset_splits.dataset_props[Props.dipole] == Props.dipole
 
     # Add more assertions as needed
+
 
 if __name__ == "__main__":
     pytest.main([__file__])
