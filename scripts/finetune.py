@@ -17,6 +17,7 @@ from lib.datasets import (
     get_qm7x_dataset,
     get_qm7x_pbe0_dataset,
     get_rmd17_dataset,
+    get_ko2020_dataset,
 )
 from lib.ema import EMAModel
 from lib.loss import LossModule
@@ -298,6 +299,41 @@ qm7x_data = pbuilds(
     splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
+ko2020_ag_cluster = pbuilds(
+    get_ko2020_dataset,
+    data_dir="./data",
+    molecule_name="Ag_cluster",
+    splits={"train": 0.8, "val": 0.1, "test": 0.1},
+)
+
+ko2020_AuMgO = pbuilds(  # noqa: N816
+    get_ko2020_dataset,
+    data_dir="./data",
+    molecule_name="AuMgO",
+    splits={"train": 0.8, "val": 0.1, "test": 0.1},
+)
+
+ko2020_Carbon_chain = pbuilds(  # noqa: N816
+    get_ko2020_dataset,
+    data_dir="./data",
+    molecule_name="Carbon_chain",
+    splits={"train": 0.8, "val": 0.1, "test": 0.1},
+)
+
+ko2020_NaCl = pbuilds(  # noqa: N816
+    get_ko2020_dataset,
+    data_dir="./data",
+    molecule_name="NaCl",
+    splits={"train": 0.8, "val": 0.1, "test": 0.1},
+)
+
+ko2020_NaCl = pbuilds(  # noqa: N816
+    get_ko2020_dataset,
+    data_dir="/temp_data",
+    molecule_name="NaCl",
+    splits={"train": 0.8, "val": 0.1, "test": 0.1},
+)
+
 
 dataset_store = store(group="ft/dataset")
 dataset_store(qcml_data, name="qcml")
@@ -330,6 +366,10 @@ dataset_store(rmd17_toluene, name="rmd17_toluene")
 dataset_store(rmd17_uracil, name="rmd17_uracil")
 dataset_store(qm7x_pbe0_data, name="qm7x_pbe0")
 dataset_store(qm7x_data, name="qm7x")
+dataset_store(ko2020_ag_cluster, name="ko2020_ag_cluster")
+dataset_store(ko2020_AuMgO, name="ko2020_AuMgO")
+dataset_store(ko2020_Carbon_chain, name="ko2020_Carbon_chain")
+dataset_store(ko2020_NaCl, name="ko2020_NaCl")
 
 
 def finetune(
