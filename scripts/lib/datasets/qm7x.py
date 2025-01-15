@@ -8,7 +8,7 @@ import h5py
 from ase import Atoms
 from ase.db import connect
 from frozendict import frozendict
-from lib.datasets.utils import non_overlapping_train_test_val_split_hash_based, convert_force
+from lib.datasets.utils import convert_coordinates, non_overlapping_train_test_val_split_hash_based, convert_force
 from lib.types import DatasetSplits, Split
 from lib.types import Property as Props
 from loguru import logger
@@ -29,16 +29,18 @@ __pbar = None
 
 
 class ASEAtomsDBDataset(Dataset):
-    def __init__(self, db_path: Path, force_unit: str) -> None:
+    def __init__(self, db_path: Path, force_unit: str, coordinate_unit: str) -> None:
         self.db_path = db_path
         self.conn = connect(self.db_path, use_lock_file=False)
+        self.force_unit = force_unit
+        self.coordinate_unit = coordinate_unit
 
     def __len__(self) -> int:
         return self.conn.count()
 
     def __getitem__(self, idx) -> dict:
         # ASE DB uses 1-based indexing
-        row = self.conn.get(idx + 1)
+        row = self.conn.get(int(idx + 1))
         Z = row.numbers
         positions = row.positions
         # properties
@@ -46,9 +48,9 @@ class ASEAtomsDBDataset(Dataset):
 
         return {
             "Z": Z,
-            "positions": positions,
+            "positions": convert_coordinates(positions, from_unit=self.coordinate_unit, to_unit="Bohr"), 
             "energy": properties["energy"],
-            "forces": convert_force(properties["forces"], from_unit="eV/Å", to_unit="Hartree/Bohr"),
+            "forces": convert_force(properties["forces"], from_unit=self.force_unit, to_unit="Hartree/Bohr"),
         }
 
     def get_chemical_formula(self, idx) -> str:
@@ -82,8 +84,8 @@ def get_qm7x_dataset(
     working_path = workdir if workdir is not None else data_dir
 
     # Create directory structure
-    raw_dir = working_path / "qm7x" / "raw"
-    db_dir = data_dir / "qm7x"
+    raw_dir = Path(working_path) / "qm7x" / "raw"
+    db_dir = Path(data_dir) / "qm7x"
     raw_dir.mkdir(parents=True, exist_ok=True)
     db_dir.mkdir(parents=True, exist_ok=True)
 
@@ -112,7 +114,7 @@ def get_qm7x_dataset(
         dist.barrier()
 
     # Create dataset from the database
-    dataset = ASEAtomsDBDataset(db_path, force_unit="eV/Å")
+    dataset = ASEAtomsDBDataset(db_path, force_unit="eV/Å", coordinate_unit="Å")
 
     # Split dataset
     logger.info("Splitting dataset...")
