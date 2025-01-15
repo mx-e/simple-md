@@ -47,6 +47,7 @@ def train_loop(
     wandb: WandBConfig | None = None,
     clip_grad: float = 1.0,
     ptdtype: Literal["float32", "bfloat16", "float16"] = "float32",
+    always_eval_test: bool = False,
 ) -> None:
     lr_scheduler = LRScheduler() if lr_scheduler is None else lr_scheduler
     ctx = get_amp(ptdtype)
@@ -103,7 +104,7 @@ def train_loop(
                     key_suffix=f"_{Split.val}",
                 )
 
-                if best_val is None or val_loss["total"] < best_val:
+                if best_val is None or val_loss["total"] < best_val or always_eval_test:
                     best_val = val_loss["total"]
                     test_loss = evaluate(model, loaders[Split.test], ctx, ema, eval_samples)
                     save_checkpoint(
@@ -161,6 +162,12 @@ def evaluate(model, loader, ctx, ema, eval_samples) -> dict:
     model.eval()
     logger.info(f"Evaluating on {eval_samples} samples")
     steps = eval_samples // loader.batch_size
+    assert eval_samples <= len(loader.dataset), (
+        f"Eval samples must be less than the dataset size but got {eval_samples} > {len(loader.dataset)}"
+    )
+    assert eval_samples % loader.batch_size == 0, (
+        f"Eval samples must be divisible by the batch size, but got {eval_samples} % {loader.batch_size}"
+    )
     total_losses = eval_try_without_grad(model, loader, ctx, None, eval_samples)
     losses = {f"{k}": v.item() / steps for k, v in total_losses.items()}
     if ema is not None:

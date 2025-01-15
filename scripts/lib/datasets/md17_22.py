@@ -75,11 +75,12 @@ def get_md17_22_dataset(
 
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
-    dataset = NPZDataset(file_path, md17_props, force_unit="kcal/(mol·Å)")
+    dataset = NPZDataset(file_path, md17_props, force_unit="kcal/(mol·Å)", coord_unit="Å")
 
-    index_array = np.arange(len(dataset))
-    train_val, test = train_test_split(index_array, test_size=splits["train"] + splits["val"], random_state=seed)
-    train, val = train_test_split(train_val, test_size=splits["val"], random_state=seed)
+    ds_len = len(dataset)
+    index_array = np.arange(ds_len)
+    train_val, test = train_test_split(index_array, test_size=int(ds_len * splits["test"]), random_state=seed)
+    train, val = train_test_split(train_val, test_size=int(ds_len * splits["val"]), random_state=seed)
 
     datasets = {
         Split.train: Subset(dataset, train),
