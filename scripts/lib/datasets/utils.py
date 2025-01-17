@@ -19,14 +19,14 @@ molecule_name_formula = frozendict(
     }
 )
 
-def get_split_by_molecule_name(molecule_name: str, splits: dict, seed) -> str:
+def get_split_by_molecule_name(molecule_name: str, splits: dict, seed: int) -> str:
     if molecule_name not in molecule_name_formula:
         logger.warning(f"Unknown chemical formula for '{molecule_name}'.")
         return "unknown"
     
     # get split with non_overlapping_train_test_val_split_hash_based
     molecule_names = np.array([molecule_name_formula[molecule_name]])
-    train_idx, test_idx, val_idx = non_overlapping_train_test_val_split_hash_based(splits, molecule_names, seed=42)
+    train_idx, test_idx, val_idx = non_overlapping_train_test_val_split_hash_based(splits, molecule_names, seed=42, prevent_warnings=True)
 
     if len(train_idx) > 0:
         return "train"
@@ -36,8 +36,6 @@ def get_split_by_molecule_name(molecule_name: str, splits: dict, seed) -> str:
         return "val"
     else:
         return "unknown"
-
-
 
 def non_overlapping_train_test_val_split(
     splits: dict[str, float], groups: np.array, seed: int = 42
@@ -58,7 +56,7 @@ def non_overlapping_train_test_val_split(
 
 
 def non_overlapping_train_test_val_split_hash_based(
-    splits: dict[str, float], groups: np.array, seed: int = 42
+    splits: dict[str, float], groups: np.array, seed: int = 42, prevent_warnings: bool = False
 ) -> tuple[np.array, np.array, np.array]:
     hash_val = get_split_hash(groups, seed).numpy()
 
@@ -66,16 +64,17 @@ def non_overlapping_train_test_val_split_hash_based(
     test_idxs = np.where((hash_val >= splits["train"]) & (hash_val < splits["train"] + splits["test"]))[0]
     val_idxs = np.where(hash_val >= splits["train"] + splits["test"])[0]
 
-    # check if the split sizes are close to the desired values and warn if not
-    train_size = len(train_idxs) / len(groups)
-    test_size = len(test_idxs) / len(groups)
-    val_size = len(val_idxs) / len(groups)
-    if abs(train_size - splits["train"]) > 0.01:
-        logger.warning(f"Warning: train split size is {train_size:.2f} instead of {splits['train']:.2f}")
-    if abs(test_size - splits["test"]) > 0.01:
-        logger.warning(f"Warning: test split size is {test_size:.2f} instead of {splits['test']:.2f}")
-    if abs(val_size - splits["val"]) > 0.01:
-        logger.warning(f"Warning: val split size is {val_size:.2f} instead of {splits['val']:.2f}")
+    if not prevent_warnings:
+        # check if the split sizes are close to the desired values and warn if not
+        train_size = len(train_idxs) / len(groups)
+        test_size = len(test_idxs) / len(groups)
+        val_size = len(val_idxs) / len(groups)
+        if abs(train_size - splits["train"]) > 0.01:
+            logger.warning(f"Warning: train split size is {train_size:.2f} instead of {splits['train']:.2f}")
+        if abs(test_size - splits["test"]) > 0.01:
+            logger.warning(f"Warning: test split size is {test_size:.2f} instead of {splits['test']:.2f}")
+        if abs(val_size - splits["val"]) > 0.01:
+            logger.warning(f"Warning: val split size is {val_size:.2f} instead of {splits['val']:.2f}")
 
     return train_idxs, test_idxs, val_idxs
 
