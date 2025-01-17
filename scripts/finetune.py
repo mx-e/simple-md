@@ -1,5 +1,6 @@
 #! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data --bind /home/bbdc2/quantum/max/:/data container.sif python
 from functools import partial
+import json
 from pathlib import Path
 from typing import Literal
 
@@ -535,11 +536,9 @@ def finetune(
 
                 eval_artifact = wandb.Artifact(f"eval_results_{wandb.run.id}", type="evaluation")
                 eval_artifact.add(results_table, "results_table")
-                eval_artifact.add(wandb.Data(data=val_results, type="val_results"), "val_results")
-                eval_artifact.add(wandb.Data(data=test_results, type="test_results"), "test_results")
                 cfg.wandb.run.log_artifact(eval_artifact)
 
-                (cfg.runtime.out_dir / "eval_results.json").write_text(results_table.to_json())
+                (cfg.runtime.out_dir / "eval_results.json").write_text(json.dumps(results_table._to_table_json()))
 
                 for metric_name, metric in val_results.items():
                     cfg.wandb.run.summary[f"final_val/{metric_name}"] = metric
@@ -555,6 +554,7 @@ def finetune(
             )
     finally:
         cleanup_dist()
+        wandb.finish()
 
 
 p_ft_func = pbuilds_full(finetune)
