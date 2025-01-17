@@ -11,6 +11,7 @@ from lib.types import DatasetSplits, Split
 from lib.types import Property as Props
 from loguru import logger
 from sklearn.model_selection import train_test_split
+from scripts.lib.datasets.utils import get_split_by_molecule_name
 from torch import distributed as dist
 from torch.utils.data import Subset
 
@@ -155,7 +156,7 @@ def get_ko2020_dataset(
     rank: int,
     data_dir: Path,
     molecule_name: str,
-    workdir: Path | None = None,
+    work_dir: Path | None = None,
     splits: dict[str, float] | None = None,
     seed: int = 42,
 ) -> None:
@@ -166,7 +167,7 @@ def get_ko2020_dataset(
         f"Unknown molecule {molecule_name=}, expected one of {dataset_filenames.keys()}"
     )
 
-    working_path = workdir if workdir is not None else data_dir
+    working_path = work_dir if work_dir is not None else data_dir
     npz_dir = data_dir / "ko2020"
     npz_file_path = npz_dir / dataset_filenames[molecule_name]
     out_file_paths = {k: npz_dir / v for k, v in dataset_filenames.items()}
@@ -185,6 +186,10 @@ def get_ko2020_dataset(
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
     dataset = NPZDataset(out_file_paths[molecule_name], ko2020_props, force_unit="kcal/(mol·Å)", coord_unit="Å")
+
+    # get split in which this molecule is probably included during training
+    split_name = get_split_by_molecule_name(molecule_name, splits={'train': 0.8, 'test':0.1, 'val': 0.1}, seed=42)
+    logger.info(f"This molecule was probably included in the {split_name} split during training.")
 
     ds_len = len(dataset)
     index_array = np.arange(ds_len)

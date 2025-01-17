@@ -99,7 +99,7 @@ qcml_data = pbuilds(
 rmd17_aspirin = pbuilds(
     get_rmd17_dataset,
     data_dir="/temp_data",
-    molecule_name="benzene",
+    molecule_name="aspirin",
     splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
@@ -295,7 +295,8 @@ qm7x_pbe0_data = pbuilds(
 
 qm7x_data = pbuilds(
     get_qm7x_dataset,
-    data_dir="/temp_data",
+    data_dir="./data",
+    work_dir="/temp_data",
     splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 

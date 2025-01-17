@@ -11,6 +11,7 @@ from loguru import logger
 from sklearn.model_selection import train_test_split
 from torch import distributed as dist
 from torch.utils.data import Subset
+from lib.datasets.utils import get_split_by_molecule_name
 
 rmd17_props = frozendict(
     {
@@ -77,6 +78,10 @@ def get_rmd17_dataset(
 
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
+
+    # get split in which this molecule is probably included during training
+    split_name = get_split_by_molecule_name(molecule_name, splits={'train': 0.8, 'test':0.1, 'val': 0.1}, seed=42)
+    logger.info(f"This molecule was probably included in the {split_name} split during training.")
 
     dataset = NPZDataset(file_path, props=rmd17_props, force_unit="kcal/(mol·Å)", coord_unit="Å")
 

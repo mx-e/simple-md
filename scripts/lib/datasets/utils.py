@@ -2,6 +2,41 @@ import numpy as np
 from loguru import logger
 from sklearn.model_selection import GroupShuffleSplit
 from tools.preprocess_fixed_splits_qcml import get_split_hash
+from frozendict import frozendict
+
+molecule_name_formula = frozendict(
+    {
+        "aspirin": "C9H8O4",
+        "azobenzene": "C12H10N2",
+        "benzene": "C6H6",
+        "ethanol": "C2H6O",
+        "malonaldehyde": "C3H2O4",
+        "naphthalene": "C10H8",
+        "paracetamol": "C8H9NO2",
+        "salicylic_acid": "C7H6O3",
+        "toluene": "C7H8",
+        "uracil": "C4H4N2O2",
+    }
+)
+
+def get_split_by_molecule_name(molecule_name: str, splits: dict, seed) -> str:
+    if molecule_name not in molecule_name_formula:
+        logger.warning(f"Unknown chemical formula for '{molecule_name}'.")
+        return "unknown"
+    
+    # get split with non_overlapping_train_test_val_split_hash_based
+    molecule_names = np.array([molecule_name_formula[molecule_name]])
+    train_idx, test_idx, val_idx = non_overlapping_train_test_val_split_hash_based(splits, molecule_names, seed=42)
+
+    if len(train_idx) > 0:
+        return "train"
+    elif len(test_idx) > 0:
+        return "test"
+    elif len(val_idx) > 0:
+        return "val"
+    else:
+        return "unknown"
+
 
 
 def non_overlapping_train_test_val_split(

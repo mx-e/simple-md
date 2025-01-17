@@ -60,8 +60,8 @@ class ASEAtomsDBDataset(Dataset):
 
 def get_qm7x_dataset(
     rank: int,
-    data_dir: Path,
-    workdir: Path | None = None,
+    data_dir: str,
+    work_dir: str | None = None,
     splits: dict[str, float] | None = None,
     seed: int = 42,
 ) -> DatasetSplits:
@@ -70,7 +70,7 @@ def get_qm7x_dataset(
     Args:
         rank: Process rank for distributed training
         data_dir: Directory where the final dataset should be stored
-        workdir: Working directory for downloads and processing. If None, uses data_dir
+        work_dir: Working directory for downloads and processing. If None, uses data_dir
         splits: Dictionary with train/val/test split ratios. Defaults to 50/30/20
         seed: Random seed for reproducibility
 
@@ -81,7 +81,7 @@ def get_qm7x_dataset(
         splits = {"train": 0.5, "val": 0.3, "test": 0.2}
 
     # Setup directories
-    working_path = workdir if workdir is not None else data_dir
+    working_path = work_dir if work_dir is not None else data_dir
 
     # Create directory structure
     raw_dir = Path(working_path) / "qm7x" / "raw"
@@ -90,7 +90,7 @@ def get_qm7x_dataset(
     db_dir.mkdir(parents=True, exist_ok=True)
 
     permanent_db_path = db_dir / "qm7x.db"
-    db_path = (working_path / "qm7x" / "qm7x.db") if workdir else permanent_db_path
+    db_path = (Path(working_path) / "qm7x" / "qm7x.db") if work_dir else permanent_db_path
 
     if not permanent_db_path.exists() and rank == 0:
         logger.info(f"QM7-X dataset not found, downloading to {raw_dir}")
@@ -102,12 +102,14 @@ def get_qm7x_dataset(
         logger.info("Cleaning up intermediate files...")
         shutil.rmtree(raw_dir)
 
-        if workdir is not None:
+        if work_dir is not None:
             logger.info(f"Copying database to permanent storage: {permanent_db_path}")
             shutil.copy2(db_path, permanent_db_path)
-    elif workdir is not None and rank == 0:
+    elif work_dir is not None and rank == 0:
         logger.info(f"Copying database to fast storage: {permanent_db_path}")
         shutil.copy2(permanent_db_path, db_path)
+        shutil.copy2(permanent_db_path.with_suffix(".txt"), db_path.with_suffix(".txt"))
+
 
     # Wait for rank 0 to finish database operations
     if dist.is_available() and dist.is_initialized():

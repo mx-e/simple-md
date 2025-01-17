@@ -8,6 +8,7 @@ from lib.types import DatasetSplits, Split
 from lib.types import Property as Props
 from loguru import logger
 from sklearn.model_selection import train_test_split
+from scripts.lib.datasets.utils import get_split_by_molecule_name
 from torch import distributed as dist
 from torch.utils.data import Subset
 
@@ -76,6 +77,10 @@ def get_md17_22_dataset(
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
     dataset = NPZDataset(file_path, md17_props, force_unit="kcal/(mol·Å)", coord_unit="Å")
+
+    # get split in which this molecule is probably included during training
+    split_name = get_split_by_molecule_name(molecule_name, splits, seed)
+    logger.info(f"This molecule was probably included in the {split_name} split during training.")
 
     ds_len = len(dataset)
     index_array = np.arange(ds_len)
