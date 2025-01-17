@@ -2,6 +2,10 @@
 
 import tensorflow_datasets as tfds
 import tensorflow as tf
+#prevent tensorflow from allocating all memory
+gpus = tf.config.experimental.list_physical_devices('GPU')
+for gpu in gpus:
+  tf.config.experimental.set_memory_growth(gpu, True)
 import os
 import json
 import numpy as np
