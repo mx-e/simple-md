@@ -54,7 +54,7 @@ BaseSweepConfig = builds(
     SweepJob,
     num_workers=2,
     sweep_id="test",
-    parameters={"cfg.seed": [42, 1337], "train.loss.loss_types.forces": ["mae", "mse", "euclidean"]},
+    parameters={"cfg.seed": [42, 1337]},
     builds_bases=(BaseJobConfig,),
 )
 

@@ -75,7 +75,7 @@ pair_encoder_data_config = builds(
     random_rotation=True,
     random_reflection=True,
     center_positions=True,
-    dynamic_batch_size_cutoff=100,
+    dynamic_batch_size_cutoff=10000,
     include_dipole=False,
 )
 ft_loop = pbuilds(
@@ -328,13 +328,6 @@ ko2020_NaCl = pbuilds(  # noqa: N816
     splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
-ko2020_NaCl = pbuilds(  # noqa: N816
-    get_ko2020_dataset,
-    data_dir="/temp_data",
-    molecule_name="NaCl",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
-)
-
 
 dataset_store = store(group="ft/dataset")
 dataset_store(qcml_data, name="qcml")
@@ -385,8 +378,8 @@ def finetune(
     train_loop: Partial[callable] = ft_loop,
     finetune_type: Literal["head_only", "full"] = "full",
     train_size: Literal["zero_shot", "few_shot", "full"] = "few_shot",
-    few_shot_size: int = 950,
-    batch_size: int = 250,
+    few_shot_size: int = 1000,
+    batch_size: int = 10,
     total_steps: int = 1000,
     final_eval_samples: int = 500,
     lr: float = 5e-5,

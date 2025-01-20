@@ -101,7 +101,7 @@ class Job:
     @property
     def python_command(self) -> str:
         """Python command used by the job."""
-        return f"apptainer exec --nv --bind /temp:/temp_data {self.image} python"
+        return f"apptainer exec --nv --bind /temp:/temp_data --bind /home/bbdc2/quantum/max/:/data {self.image} python"
 
     def run(self) -> None:
         """Run the job on the cluster."""

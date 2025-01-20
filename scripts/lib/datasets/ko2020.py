@@ -39,7 +39,7 @@ def read_runner_configurations(file_path: Path) -> tuple[list, list, np.ndarray,
     all_forces = []
     all_energies = []
     all_charges = []
-    atomic_nums = None
+    all_atomic_nums = []
 
     for config in configs:
         if not config:
@@ -63,9 +63,9 @@ def read_runner_configurations(file_path: Path) -> tuple[list, list, np.ndarray,
             elif parts[0] == "charge":
                 charge = float(parts[1])
 
-        if atomic_nums is None:
-            atomic_nums = np.array([atomic_numbers[sym] for sym in symbols])
+        atomic_nums = np.array([atomic_numbers[sym] for sym in symbols])
 
+        all_atomic_nums.append(atomic_nums)
         all_positions.append(np.array(positions))
         all_forces.append(np.array(forces))
         all_energies.append(energy)
@@ -80,7 +80,7 @@ def read_runner_configurations(file_path: Path) -> tuple[list, list, np.ndarray,
         f"max={max(len(pos) for pos in all_positions)}"
     )
 
-    return all_positions, all_forces, energies_array, atomic_nums, charges_array
+    return all_positions, all_forces, energies_array, all_atomic_nums, charges_array
 
 
 def convert_runner_to_npz(source_path: Path, target_path: Path) -> None:
@@ -90,6 +90,7 @@ def convert_runner_to_npz(source_path: Path, target_path: Path) -> None:
     # Convert to object arrays for ragged data
     positions_array = np.array(positions, dtype=object)
     forces_array = np.array(forces, dtype=object)
+    atomic_nums_array = np.array(atomic_numbers, dtype=object)
 
     # Save as NPZ file
     np.savez(
@@ -97,7 +98,7 @@ def convert_runner_to_npz(source_path: Path, target_path: Path) -> None:
         positions=positions_array,
         forces=forces_array,
         energy=energies,
-        atomic_numbers=atomic_numbers,
+        atomic_numbers=atomic_nums_array,
         charges=charges,
     )
 
@@ -108,7 +109,7 @@ def convert_runner_to_npz(source_path: Path, target_path: Path) -> None:
     logger.info(f"  Positions: array of shape ({len(positions)},) containing arrays of shape (n_atoms, 3)")
     logger.info(f"  Forces: array of shape ({len(forces)},) containing arrays of shape (n_atoms, 3)")
     logger.info(f"  Energies: {energies.shape}")
-    logger.info(f"  Atomic numbers: {atomic_numbers.shape}")
+    logger.info(f"  Atomic numbers: {len(atomic_numbers)} arrays of shape (n_atoms,)")
     logger.info(f"  Molecular charges: {charges.shape}")
 
 

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 from lib.datasets.utils import convert_force, convert_coordinates
-from lib.types import Property as Props
+from lib.types import Property as Props, property_dtype
 from torch.utils.data import Dataset
 
 
@@ -56,17 +56,21 @@ class NPZDataset(Dataset):
 
     def __getitem__(self, idx) -> dict:
         sample = {
-            self.props[Props.energy]: self.data[self.props[Props.energy]][idx],
+            self.props[Props.energy]: self.data[self.props[Props.energy]][idx].astype("float32"),
             self.props[Props.forces]: convert_force(
-                self.data[self.props[Props.forces]][idx], from_unit=self.force_unit, to_unit="Hartree/Bohr"
+                self.data[self.props[Props.forces]][idx].astype("float32"),
+                from_unit=self.force_unit,
+                to_unit="Hartree/Bohr",
             ),
             self.props[Props.positions]: convert_coordinates(
-                self.data[self.props[Props.positions]][idx], from_unit=self.coord_unit, to_unit="Bohr"
+                self.data[self.props[Props.positions]][idx].astype("float32"),
+                from_unit=self.coord_unit,
+                to_unit="Bohr",
             ),
             self.props[Props.atomic_numbers]: (
-                self.data[self.props[Props.atomic_numbers]][idx]
+                self.data[self.props[Props.atomic_numbers]][idx].astype("int32")
                 if self.is_ragged
-                else self.data[self.props[Props.atomic_numbers]]
+                else self.data[self.props[Props.atomic_numbers]].astype("int32")
             ),
         }
 
