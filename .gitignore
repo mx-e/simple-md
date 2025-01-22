@@ -169,3 +169,4 @@ data_ar
 models
 
 **/*.sif
+.vscode/sftp.json
