@@ -72,8 +72,7 @@ def main(
     if "ft" in model_run_conf:
         logger.info("detected fine-tuned model, loading pretrain model configuration")
         model_pt_conf_path = model_run_dir / ".hydra" / "model_pretrain_conf.yaml"
-        model_pt_conf = load_from_yaml(model_pt_conf_path)
-        model_conf = model_pt_conf["model"]
+        model_conf = load_from_yaml(model_pt_conf_path)
     elif "train" in model_run_conf:
         model_conf = model_run_conf["train"]["model"]
     model = instantiate(model_conf)

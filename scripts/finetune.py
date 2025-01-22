@@ -9,7 +9,7 @@ import torch as th
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from conf.base_conf import BaseConfig, configure_main
-from hydra_zen import builds, instantiate, load_from_yaml, store
+from hydra_zen import builds, instantiate, load_from_yaml, store, to_yaml
 from hydra_zen.typing import Partial
 from lib.data.loaders import get_loaders
 from lib.datasets import (
@@ -379,8 +379,8 @@ def finetune(
     train_loop: Partial[callable] = ft_loop,
     finetune_type: Literal["head_only", "full"] = "full",
     train_size: Literal["zero_shot", "few_shot", "full"] = "few_shot",
-    few_shot_size: int = 1000,
-    batch_size: int = 10,
+    few_shot_size: int = 9500,
+    batch_size: int = 250,
     total_steps: int = 1000,
     final_eval_samples: int = 500,
     lr: float = 5e-5,
@@ -399,6 +399,10 @@ def finetune(
         conf = load_from_yaml(config_path)
         model_conf = conf["train"]["model"]
         model = instantiate(model_conf)
+        # save model conf to finetune config
+        model_conf_path = cfg.runtime.out_dir / ".hydra" / "model_pretrain_conf.yaml"
+        model_conf_path.write_text(to_yaml(model_conf))
+
         if loss is None:
             loss = instantiate(conf["train"]["loss"])
         model = Predictor(model, loss).to(device)
