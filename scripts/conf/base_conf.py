@@ -13,9 +13,7 @@ from lib.utils.helpers import get_hydra_output_dir
 
 @dataclass
 class RuntimeInfo:
-    device: str = field(
-        default_factory=lambda: "cuda" if th.cuda.is_available() else "cpu"
-    )
+    device: str = field(default_factory=lambda: "cuda" if th.cuda.is_available() else "cpu")
     out_dir: Path | None = None
     n_gpu: int = field(default_factory=th.cuda.device_count)
     node_hostname: str = field(default_factory=socket.gethostname)
@@ -32,14 +30,14 @@ class BaseConfig:
 
 BaseSlurmConfig = builds(
     SlurmConfig,
-    partition="gpu-5h",
-    cpus_per_task=6,
+    partition="gpu-7d",
+    cpus_per_task=16,
     gpus_per_task=1,
-    memory_gb=32,
+    memory_gb=64,
     nodes=1,
     tasks_per_node=1,
-    exclude="head046",
-    constraint="h100|80gb|40gb",
+    exclude="head049,head076",
+    constraint="h100|80gb",
 )
 
 # get main script path
@@ -55,6 +53,7 @@ BaseJobConfig = builds(
 BaseSweepConfig = builds(
     SweepJob,
     num_workers=2,
+    sweep_id="test",
     parameters={"cfg.seed": [42, 1337]},
     builds_bases=(BaseJobConfig,),
 )

@@ -53,8 +53,8 @@ NEW_CONFIG_TEMPLATE = {
         "data": {
             "_target_": "lib.datasets.qcml.get_qcml_dataset",
             "_partial_": True,
-            "data_dir": "/home/maxi/MOLECULAR_ML/5_refactored_repo/data_ar",
-            "dataset_name": "qcml_unified_fixed_split_by_smiles",
+            "data_dir": "data/data_arrecord",
+            "dataset_name": "qcml_fixed_split_by_smiles",
             "dataset_version": "1.0.0",
             "copy_to_temp": True,
         },
@@ -70,7 +70,7 @@ NEW_CONFIG_TEMPLATE = {
             "_target_": "lib.loss.LossModule",
             "targets": ["forces"],
             "loss_types": {"forces": "euclidean"},
-            "metrics": {"forces": ["mae", "mse", "rmse", "euclidean"]},
+            "metrics": {"forces": ["mae", "mse", "euclidean"]},
         },
         "lr_scheduler": {
             "_target_": "lib.lr_scheduler.get_lr_scheduler",

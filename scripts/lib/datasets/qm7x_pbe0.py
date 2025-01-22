@@ -7,7 +7,7 @@ from lib.types import DatasetSplits, Split
 from lib.types import Property as Props
 from loguru import logger
 
-qcml_props = frozendict(
+qm7x_pbe0_props = frozendict(
     {
         Props.energy: "pbe0_energy",
         Props.formation_energy: "pbe0_formation_energy",
@@ -21,7 +21,7 @@ qcml_props = frozendict(
 )
 
 
-def get_qcml_dataset(
+def get_qm7x_pbe0_dataset(
     rank,
     data_dir,
     dataset_name,
@@ -32,7 +32,6 @@ def get_qcml_dataset(
     if splits is None:
         splits = {"train": "train", "val": "val", "test": "test"}
     data_path = Path(data_dir) / dataset_name / dataset_version
-    logger.info(f"Loading dataset from {data_path.resolve()}")
     splits = {Split[k]: v for k, v in splits.items()}
 
     if copy_to_temp:
@@ -53,6 +52,7 @@ def get_qcml_dataset(
 
     decoders = {
         "smiles": tfds.decode.SkipDecoding(),
+        "smiles_hash": tfds.decode.SkipDecoding(),
     }
 
     builder = tfds.builder_from_directory(data_path)
@@ -61,5 +61,5 @@ def get_qcml_dataset(
 
     return DatasetSplits(
         splits=datasets,
-        dataset_props=qcml_props,
+        dataset_props=qm7x_pbe0_props,
     )

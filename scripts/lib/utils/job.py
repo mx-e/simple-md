@@ -101,7 +101,7 @@ class Job:
     @property
     def python_command(self) -> str:
         """Python command used by the job."""
-        return f"apptainer exec --nv --bind /temp:/temp_data {self.image} python"
+        return f"apptainer exec --nv --bind /temp:/temp_data --bind /home/bbdc2/quantum/max/:/data {self.image} python"
 
     def run(self) -> None:
         """Run the job on the cluster."""
@@ -133,6 +133,7 @@ class Job:
 class SweepJob(Job):
     """Job to run a sweep on a cluster."""
 
+    sweep_id: str = "no_sweep_id"  # for collection of results
     num_workers: int = 2
     parameters: dict[str, list[Any]] = field(default_factory=dict)
     metric_name: str = "loss"
@@ -173,7 +174,6 @@ class SweepJob(Job):
         """Run the sweep on the cluster."""
         parameters = {cfg_key: {"values": list(values)} for cfg_key, values in self.parameters.items()}
         metric = {"goal": self.metric_goal, "name": self.metric_name}
-        print(sys.argv)
         program, args = self.get_absolute_program_path(sys.argv[0]), self.filter_args(sys.argv[1:])
         command = [
             "${env}",

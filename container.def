@@ -9,6 +9,7 @@ From: mx8e/cluster_python:3.12
     mkdir -p ${APPTAINER_ROOTFS}/var/log/munge
     mkdir -p ${APPTAINER_ROOTFS}/run/munge
     mkdir -p ${APPTAINER_ROOTFS}/temp_data
+    mkdir -p ${APPTAINER_ROOTFS}/data
 
 %files
     pyproject.toml /pyproject.toml

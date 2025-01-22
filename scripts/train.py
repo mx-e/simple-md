@@ -1,4 +1,4 @@
-#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data /home/maxi/MOLECULAR_ML/5_refactored_repo/container.sif python
+#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data --bind /home/bbdc2/quantum/max/:/data container.sif python
 from functools import partial
 
 import numpy as np
@@ -40,25 +40,33 @@ p_no_scheduler = pbuilds(get_lr_scheduler)
 p_cosine_scheduler = pbuilds(
     get_lr_scheduler,
     scheduler_type="cosine_warmup",
-    warmup_steps=2000,
+    warmup_steps=5000,
     min_lr=1e-7,
 )
-loss_module = builds(
+loss_module_forces = builds(
     LossModule,
     targets=["forces"],
     loss_types={"forces": "mse"},
-    metrics={"forces": ["mae", "mse", "rmse", "euclidean", "huber"]},
-    compute_metrics_train=True,
+    metrics={"forces": ["mae", "mse", "euclidean"]},
+    compute_metrics_train=False,
 )
+loss_module_dipole = builds(
+    LossModule,
+    targets=["dipole"],
+    loss_types={"dipole": "mae"},
+    metrics={"dipole": ["mae", "mse", "euclidean"]},
+    compute_metrics_train=False,
+)
+
 pair_encoder_model = builds(
     PairEncoder,
-    n_layers=3,
+    n_layers=12,
     embd_dim=192,
     num_3d_kernels=128,
     cls_token=False,
     num_heads=12,
     activation="gelu",
-    ffn_multiplier=4,
+    ffn_multiplier=2,
     attention_dropout=0.0,
     ffn_dropout=0.0,
     head_dropout=0.0,
@@ -67,6 +75,7 @@ pair_encoder_model = builds(
     decomposer_type="pooling",
     target_heads=["forces"],
     head_project_down=True,
+    compose_dipole_from_charges=False,
 )
 pair_encoder_data_config = builds(
     get_pair_encoder_pipeline_config,
@@ -75,18 +84,19 @@ pair_encoder_data_config = builds(
     random_reflection=True,
     center_positions=True,
     dynamic_batch_size_cutoff=29,
+    include_dipole=True,
 )
 qcml_data = pbuilds(
     get_qcml_dataset,
-    data_dir="/home/maxi/MOLECULAR_ML/5_refactored_repo/data_ar",
-    dataset_name="qcml_unified_fixed_split_by_smiles",
+    data_dir="/data/data_arrecord",
+    dataset_name="qcml_fixed_split_by_smiles",
     dataset_version="1.0.0",
     copy_to_temp=True,
 )
 pretrain_loop = pbuilds(
     train_loop,
     log_interval=5,
-    eval_interval=1000,
+    eval_interval=5000,
     save_interval=50000,
     eval_samples=50000,
     clip_grad=1.0,
@@ -102,13 +112,13 @@ def train(
     model: nn.Module = pair_encoder_model,
     data: DatasetSplits = qcml_data,
     pipeline_conf: PipelineConfig = pair_encoder_data_config,
-    loss: LossModule = loss_module,
+    loss: LossModule = loss_module_forces,
     train_loop: Partial[callable] | None = pretrain_loop,
     lr_scheduler: Partial[callable] | None = p_cosine_scheduler,
     ema: Partial[EMAModel] | None = p_ema,
     optimizer: Partial[th.optim.Optimizer] = p_optim,
     batch_size: int = 256,
-    total_steps: int = 200_000,
+    total_steps: int = 220_000,
     lr: float = 5e-4,
     grad_accum_steps: int = 1,
     checkpoint_path: str | None = None,
@@ -116,12 +126,14 @@ def train(
     setup_dist(rank, world_size, port=port)
     try:
         device = setup_device(rank)
+        if world_size > 1 and rank == 0:
+            cfg.wandb.reinit()  # move wandb session to spawned process for multi-gpu
         # model
         ddp_args = {
             "device_ids": ([rank] if cfg.runtime.device == "cuda" else None),
         }
-        model = Predictor(model, loss).to(device)
-        model = DDP(model, **ddp_args)
+        predictor = Predictor(model, loss).to(device)
+        model = DDP(predictor, **ddp_args)
         if ema is not None and rank == 0:
             ema = ema(model.module, device=device)
             logger.info(f"Using EMA with decay {ema.decay}")
@@ -144,7 +156,8 @@ def train(
         )
         start_step = 0
         if checkpoint_path is not None:
-            start_step = load_checkpoint(model, checkpoint_path, optimizer, ema)
+            start_step = load_checkpoint(predictor.encoder, checkpoint_path, optimizer, ema)
+            model = DDP(predictor, **ddp_args)
             dist.barrier()
 
         lr_scheduler = lr_scheduler(optimizer, lr, lr_decay_steps=total_steps)  # init after checkpoint to load lr
@@ -188,7 +201,10 @@ def main(
     mp.set_start_method("spawn", force=True)
     world_size = cfg.runtime.n_gpu if th.cuda.is_available() else 1
     logger.info(f"Running {world_size} process(es)")
-    random_port = str(np.random.randint(20000, 50000))
+    rng = np.random.RandomState()  # port selection should be truly random
+    random_port = str(
+        rng.randint(20000, 50000),
+    )
     cfg.runtime.out_dir = get_hydra_output_dir()
 
     if world_size > 1:

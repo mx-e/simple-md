@@ -23,6 +23,7 @@ def pre_call(root_config: DictConfig) -> None:
     """
     assert root_config is not None, "Config must not be None."
     assert root_config["cfg"] is not None, "Config must contain 'cfg' at root-level."
+
     config: DictConfig = root_config["cfg"]
     assert "seed" in config, "Config must contain 'seed'."
     assert "job" in config, "Config must contain 'job'."
@@ -31,7 +32,9 @@ def pre_call(root_config: DictConfig) -> None:
     assert "loglevel" in config, "Config must contain 'loglevel'."
     seed = config.get("seed", MISSING)
     job = config.get("job", MISSING)
-    if job is not MISSING:
+
+    if job is not MISSING and job is not None:
+        logger.debug(f"Job detected, running job on cluster: {job}.")
         return
 
     if (loglevel := config.get("loglevel")) is not None:
@@ -49,7 +52,7 @@ def pre_call(root_config: DictConfig) -> None:
 
     if (wandb_config := config.get("wandb")) is not None:
         wandb_run: WandBRun = instantiate(wandb_config)
-        wandb_run.run.config.update(OmegaConf.to_container(root_config))
+        wandb_run.set_config(OmegaConf.to_container(root_config))
         wandb.save(output_path / ".hydra/*", base_path=output_path, policy="now")
 
 

@@ -1,4 +1,4 @@
-#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data /home/maxi/MOLECULAR_ML/5_refactored_repo/container.sif python
+#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data --bind /home/bbdc2/quantum/max/:/data container.sif python
 import csv
 from functools import partial
 from pathlib import Path
@@ -18,7 +18,7 @@ from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from conf.base_conf import BaseConfig, configure_main
 from hydra_zen import instantiate, load_from_yaml
 from lib.data.loaders import batch_tall, collate_fn
-from lib.data.transforms import center_positions_on_centroid, get_random_rotations
+from lib.data.transforms import center_positions_on_center_of_mass, center_positions_on_centroid, get_random_rotations
 from lib.types import Property as Props
 from lib.utils.checkpoint import load_checkpoint
 from lib.utils.dist import get_amp, setup_device
@@ -39,11 +39,11 @@ def main(
     cfg: BaseConfig,
     temperature: float = 300,
     timestep: float = 0.5,
-    n_data_aug: int = 32,
+    n_data_aug: int = 64,
     step_wise_random: bool = False,
-    n_steps: int = 10000,
+    n_steps: int = 40000,
     thermostat_type: Literal["nose_hoover", "berendsen", "andersen", "langevin"] = "langevin",
-    thermostat_taut: float = 100.0,
+    thermostat_taut: float = 999999999999,
     init_struct_dir: Path = "data_md",
     init_struct: Literal[
         "15_ala",
@@ -53,9 +53,14 @@ def main(
         "ethanol",
         "hydrogen",
         "silver_trimer",
-    ] = "silver_trimer",
+    ] = "ethanol",
+    last_n_steps: int
+    | None = 10000,  # export the last n steps of the trajectory separately and use those for the dipole spectrum
     model_run_dir: Path = MISSING,
     checkpoint_name: str = "best_model",
+    dipole_model_run_dir: Path | None = None,
+    dipole_checkpoint_name: str = "best_model",
+    traj_log_interval: int = 10,
     ptdtype: Literal["float32", "bfloat16", "float16"] = "float32",
 ) -> None:
     logger.info(f"Running with base config: {cfg}")
@@ -64,11 +69,27 @@ def main(
     device, ctx = setup_device(), get_amp(ptdtype)
     model_run_conf_path = model_run_dir / ".hydra" / "config.yaml"
     model_run_conf = load_from_yaml(model_run_conf_path)
-    model_conf = model_run_conf["train"]["model"]
+    if "ft" in model_run_conf:
+        logger.info("detected fine-tuned model, loading pretrain model configuration")
+        model_pt_conf_path = model_run_dir / ".hydra" / "model_pretrain_conf.yaml"
+        model_pt_conf = load_from_yaml(model_pt_conf_path)
+        model_conf = model_pt_conf["model"]
+    elif "train" in model_run_conf:
+        model_conf = model_run_conf["train"]["model"]
     model = instantiate(model_conf)
     checkpoint_path = Path(model_run_dir) / "ckpts" / (checkpoint_name + ".pth")
     load_checkpoint(model, checkpoint_path)
     model.eval().to(device)
+
+    dipole_model = None
+    if dipole_model_run_dir is not None:
+        dipole_model_run_conf_path = Path(dipole_model_run_dir) / ".hydra" / "config.yaml"
+        dipole_model_run_conf = load_from_yaml(dipole_model_run_conf_path)
+        dipole_model_conf = dipole_model_run_conf["train"]["model"]
+        dipole_model = instantiate(dipole_model_conf)
+        dipole_checkpoint_path = Path(dipole_model_run_dir) / "ckpts" / (dipole_checkpoint_name + ".pth")
+        load_checkpoint(dipole_model, dipole_checkpoint_path)
+        dipole_model.eval().to(device)
 
     # prepare results directory, load initial structure
     results_dir = Path(job_dir) / "md_results"
@@ -98,9 +119,12 @@ def main(
 
     # Run MD simulation
     traj_path = Path(job_dir) / "md_results" / "md_trajectory.traj"
+    if last_n_steps is not None:
+        assert last_n_steps <= n_steps, "last_n_steps must be less than or equal to n_steps"
     energy_tracker = run_md_simulation(
         atoms=atoms,
         model=model,
+        dipole_model=dipole_model,
         ctx=ctx,
         device=device,
         temperature=temperature,
@@ -111,6 +135,8 @@ def main(
         trajectory_file=traj_path,
         thermostat_type=thermostat_type,
         taut=thermostat_taut,
+        save_last_n_steps=last_n_steps,
+        traj_log_interval=traj_log_interval,
     )
     # Save and plot results
     energy_tracker.save_data(results_dir)
@@ -132,10 +158,13 @@ def run_md_simulation(
     timestep=0.5,  # fs
     rotations=None,
     step_wise_random_aug=False,
-    steps=1000,
+    steps=10000,
     trajectory_file="md_trajectory.traj",
     thermostat_type="Nose-Hoover",  # Added thermostat selection
     taut=100.0,  # Thermostat time constant in fs
+    save_last_n_steps=None,
+    dipole_model=None,
+    traj_log_interval=10,
 ) -> "MDEnergyTracker":
     # Set up calculator
     calculator = MLCalculator(
@@ -176,29 +205,37 @@ def run_md_simulation(
             atoms,
             timestep * units.fs,
             temperature_K=temperature,
-            friction=1.0 / (taut * units.fs),
+            friction=1.0 / (taut),
         )
     else:
         raise ValueError(f"Unknown thermostat type: {thermostat_type}")
 
     # Set up trajectory file and energy tracker
     traj = trajectory.Trajectory(trajectory_file, "w", atoms)
-    energy_tracker = MDEnergyTracker(atoms, timestep, temperature)
+    energy_tracker = MDEnergyTracker(
+        atoms,
+        timestep,
+        temperature,
+        device,
+        dipole_model=dipole_model,
+        last_n_steps=save_last_n_steps,
+        traj_log_interval=traj_log_interval,
+    )
     xyz_trajectory = []
 
     def save_frame() -> None:
         frame = atoms.copy()
         frame.info["comment"] = (
-            f"time={len(xyz_trajectory) * timestep * 10:.1f}fs "
+            f"time={len(xyz_trajectory) * timestep:.1f}fs "
             f"temp={atoms.get_temperature():.1f}K "
             f"thermostat={thermostat_type}"
         )
         xyz_trajectory.append(frame)
 
     # Attach observers
-    dyn.attach(traj.write, interval=10)
-    dyn.attach(save_frame, interval=10)
-    dyn.attach(energy_tracker, interval=10)
+    dyn.attach(traj.write, interval=traj_log_interval)
+    dyn.attach(save_frame, interval=traj_log_interval)
+    dyn.attach(energy_tracker, interval=1)
 
     # Run dynamics with improved monitoring
     logger.info(f"Starting MD simulation with {thermostat_type} thermostat for {steps} steps...")
@@ -236,6 +273,11 @@ def run_md_simulation(
         frame.set_cell([0, 0, 0])
         frame.set_pbc(False)
     write(xyz_file, xyz_trajectory)
+
+    if save_last_n_steps is not None and traj_log_interval == 1:
+        last_n_traj = xyz_trajectory[-save_last_n_steps:]
+        last_n_traj_file = str(Path(trajectory_file).with_name(f"last_{save_last_n_steps}_steps.xyz"))
+        write(last_n_traj_file, last_n_traj)
 
     logger.info(f"Trajectory saved to {trajectory_file} and {xyz_file}")
 
@@ -279,7 +321,7 @@ class MLCalculator(Calculator):
         data = {
             "positions": positions_bohr,
             "atomic_numbers": atoms.numbers,
-            "charge": 1,  # atoms.get_initial_charges().sum(),
+            "charge": atoms.get_initial_charges().sum(),
             "multiplicity": multiplicity,
         }
 
@@ -319,10 +361,356 @@ class MLCalculator(Calculator):
         else:
             mean_force_predictions = outputs[Props.forces].squeeze()
         mean_force_predictions *= FORCE_CONVERSION
+
         # Convert outputs to calculator format
         self.results = {
             "forces": mean_force_predictions.squeeze().cpu().numpy(),
         }
+
+
+class MDEnergyTracker:
+    """Tracks energies and other observables during MD simulation"""
+
+    def __init__(
+        self, atoms, timestep, target_temperature, device, dipole_model=None, last_n_steps=0, traj_log_interval=1
+    ) -> None:
+        self.atoms = atoms  # Store reference to atoms object
+        self.timestep = timestep
+        self.target_temperature = target_temperature
+        self.initial_temp = atoms.get_temperature()
+        self.initial_kinetic = atoms.get_kinetic_energy()
+        self.dipole_model = dipole_model
+        self.last_n_steps = last_n_steps
+        self.traj_log_interval = traj_log_interval
+
+        # Initialize lists to store trajectory data
+        self.times = []
+        self.kinetic_energies = []
+        self.temperatures = []
+        self.max_velocities = []
+        self.potential_energies = []
+        self.total_energies = []
+        self.dipole_moments = []
+
+        # For potential energy integration
+        self.integrated_energy = 0.0
+        self.last_positions = None
+        self.last_forces = None
+
+        pre_batch_preprocessors = [center_positions_on_center_of_mass]
+        props = {
+            Props.positions: "positions",
+            Props.atomic_numbers: "atomic_numbers",
+            Props.charge: "charge",
+            Props.multiplicity: "multiplicity",
+        }
+        self.collate_fn = partial(
+            collate_fn,
+            device=device,
+            batch_func=batch_tall,
+            pre_batch_preprocessors=pre_batch_preprocessors,
+            props=props,
+        )
+
+        logger.info(f"Initial temperature: {self.initial_temp:.1f} K")
+        logger.info(f"Initial kinetic energy: {self.initial_kinetic:.3f} eV")
+
+    def reset_potential_energy(self) -> None:
+        """Reset the potential energy integration"""
+        self.integrated_energy = 0.0
+        self.last_positions = None
+        self.last_forces = None
+
+    def evaluate_dipole_model(self) -> np.ndarray | None:
+        """Evaluate dipole moment using the dipole model"""
+        if self.dipole_model is None:
+            return None
+
+        # Convert positions to Bohr
+        positions_bohr = self.atoms.positions * ANG_TO_BOHR
+
+        # Prepare data dictionary
+        data = {
+            "positions": positions_bohr,
+            "atomic_numbers": self.atoms.numbers,
+            "charge": self.atoms.get_initial_charges().sum(),
+            "multiplicity": 2 * abs(self.atoms.get_initial_magnetic_moments().sum()) + 1,
+        }
+
+        # Get predictions from model
+        with th.no_grad():
+            data = self.collate_fn([data])
+            outputs = self.dipole_model(data)
+            # Model returns in e*Bohr, convert to Debye (1 e*Bohr ≈ 2.542 Debye)
+            dipole = outputs[Props.dipole].squeeze().cpu().numpy() * 2.541746
+
+        return dipole
+
+    def __call__(self) -> None:
+        """Called by ASE dynamics at each observation interval"""
+        # Get basic observables
+        kinetic = self.atoms.get_kinetic_energy()
+        temp = self.atoms.get_temperature()
+        forces = self.atoms.get_forces()
+        current_positions = self.atoms.get_positions()
+
+        # Calculate potential energy through force integration
+        if self.last_positions is not None:
+            displacement = current_positions - self.last_positions
+            avg_forces = 0.5 * (forces + self.last_forces) if hasattr(self, "last_forces") else forces
+            # Scale energy change by timestep (fs)
+            delta_energy = -np.sum(avg_forces * displacement) / self.timestep  # F·dx/dt
+            self.integrated_energy += delta_energy
+
+        self.last_positions = current_positions.copy()
+        self.last_forces = forces.copy()
+
+        # Get dipole if model is available
+        if self.dipole_model is not None:
+            dipole = self.evaluate_dipole_model()
+            self.dipole_moments.append(dipole)
+
+        # Store all data
+        self.times.append(len(self.times) * self.timestep)  # Convert to fs
+        self.kinetic_energies.append(kinetic)
+        self.temperatures.append(temp)
+        self.max_velocities.append(np.max(np.linalg.norm(self.atoms.get_velocities(), axis=1)))
+        self.potential_energies.append(self.integrated_energy)
+        self.total_energies.append(kinetic + self.integrated_energy)
+
+    def compute_ir_spectrum(self, max_freq=4000) -> tuple[np.ndarray, np.ndarray]:
+        """Compute IR spectrum from dipole moment time series.
+        Uses direct Fourier transform of dipole moments.
+        """
+        if not self.dipole_moments:
+            return None, None
+
+        # Get dipole time series
+        if self.last_n_steps > 0 and self.last_n_steps < len(self.dipole_moments):
+            dipoles = np.array(self.dipole_moments[-self.last_n_steps :])
+            logger.info(f"Using last {self.last_n_steps} steps for IR spectrum")
+        else:
+            dipoles = np.array(self.dipole_moments)
+            logger.info(f"Using all {len(dipoles)} steps for IR spectrum")
+
+        # Time step and number of points
+        dt = self.timestep * 1e-15  # Convert fs to seconds
+        # Convert fs to picoseconds
+        n_points = len(dipoles)
+
+        # Get frequency axis in Hz
+        freqs_hz = np.fft.fftfreq(n_points, dt)
+
+        # Convert to wavenumbers (cm^-1)
+        c = 29979245800  # Speed of light in cm/s
+        freqs = freqs_hz / c  # Convert to cm^-1
+        # Compute FFT and power spectrum
+        dipole_norm = np.linalg.norm(dipoles, axis=1)
+        dipole_norm -= np.mean(dipole_norm)
+        dipole_norm = dipole_norm * np.hanning(len(dipole_norm))
+        spectrum = np.fft.fft(dipole_norm)
+
+        # Truncate to max frequency
+        mask = freqs <= max_freq
+        mask *= freqs >= 100
+        freqs = freqs[mask]
+        spectrum = spectrum[mask]
+
+        spectrum = np.abs(spectrum)
+        spectrum = spectrum / np.max(spectrum)
+
+        logger.info(f"Computed spectrum: {len(spectrum)} points from {freqs[0]:.1f} to {freqs[-1]:.1f} cm^-1")
+
+        return freqs, spectrum
+
+    def plot(self, save_path) -> None:
+        n_plots = 6 if self.dipole_model is not None else 4  # One extra subplot for dipole norm
+        plt.figure(figsize=(12, 3 * n_plots))
+
+        # Temperature subplot
+        plt.subplot(n_plots, 1, 1)
+        plt.plot(self.times, self.temperatures, label="Current")
+        plt.axhline(
+            y=self.target_temperature,
+            color="r",
+            linestyle="--",
+            label=f"Target ({self.target_temperature}K)",
+        )
+        plt.fill_between(
+            self.times,
+            [self.target_temperature * 0.95] * len(self.times),
+            [self.target_temperature * 1.05] * len(self.times),
+            color="r",
+            alpha=0.1,
+        )
+        plt.xlabel("Time (fs)")
+        plt.ylabel("Temperature (K)")
+        plt.title("Temperature Evolution")
+        plt.legend()
+
+        # Energy components subplot
+        plt.subplot(n_plots, 1, 2)
+        plt.plot(self.times, self.kinetic_energies, label="Kinetic")
+        plt.plot(self.times, self.potential_energies, label="Potential")
+        plt.plot(self.times, self.total_energies, label="Total")
+        plt.xlabel("Time (fs)")
+        plt.ylabel("Energy (eV)")
+        plt.title("Energy Components")
+        plt.legend()
+
+        # Energy conservation subplot
+        plt.subplot(n_plots, 1, 3)
+        energy_drift = np.array(self.total_energies) - self.total_energies[0]
+        plt.plot(self.times, energy_drift)
+        plt.xlabel("Time (fs)")
+        plt.ylabel("ΔE (eV)")
+        plt.title("Total Energy Drift")
+
+        # Velocity subplot
+        plt.subplot(n_plots, 1, 4)
+        plt.plot(self.times, self.max_velocities)
+        plt.xlabel("Time (fs)")
+        plt.ylabel("Max Velocity (Å/fs)")
+        plt.title("Maximum Atomic Velocity")
+
+        # Dipole subplots (if available)
+        if self.dipole_model is not None and self.dipole_moments:
+            # Dipole components
+            plt.subplot(n_plots, 1, 5)
+            dipole_array = np.array(self.dipole_moments)
+            plt.plot(self.times, dipole_array[:, 0], label="x")
+            plt.plot(self.times, dipole_array[:, 1], label="y")
+            plt.plot(self.times, dipole_array[:, 2], label="z")
+            plt.xlabel("Time (fs)")
+            plt.ylabel("Dipole Components (Debye)")
+            plt.title("Molecular Dipole Components")
+            plt.legend()
+
+            # Dipole magnitude
+            plt.subplot(n_plots, 1, 6)
+            plt.plot(self.times, np.linalg.norm(dipole_array, axis=1), color="black")
+            plt.xlabel("Time (fs)")
+            plt.ylabel("Dipole Magnitude (Debye)")
+            plt.title("Molecular Dipole Magnitude")
+
+        plt.tight_layout()
+        plt.savefig(save_path)
+        plt.close()
+
+    def get_stats(self) -> dict:
+        """Return summary statistics of the simulation"""
+        stats = {
+            "avg_temperature": np.mean(self.temperatures),
+            "temp_std": np.std(self.temperatures),
+            "avg_kinetic": np.mean(self.kinetic_energies),
+            "kinetic_std": np.std(self.kinetic_energies),
+            "avg_potential": np.mean(self.potential_energies),
+            "potential_std": np.std(self.potential_energies),
+            "total_energy_drift": self.total_energies[-1] - self.total_energies[0],
+        }
+
+        if self.dipole_model is not None and self.dipole_moments:
+            dipole_array = np.array(self.dipole_moments)
+            dipole_magnitudes = np.linalg.norm(dipole_array, axis=1)
+            stats.update(
+                {
+                    "avg_dipole_magnitude": np.mean(dipole_magnitudes),
+                    "dipole_magnitude_std": np.std(dipole_magnitudes),
+                    "max_dipole_magnitude": np.max(dipole_magnitudes),
+                    "min_dipole_magnitude": np.min(dipole_magnitudes),
+                }
+            )
+
+        return stats
+
+    def save_data(self, results_dir: Path) -> None:
+        results_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save main trajectory data
+        data = []
+        for i in range(len(self.times)):
+            data_point = {
+                "time": self.times[i],
+                "temperature": self.temperatures[i],
+                "kinetic_energy": self.kinetic_energies[i],
+                "potential_energy": self.potential_energies[i],
+                "total_energy": self.total_energies[i],
+                "max_velocity": self.max_velocities[i],
+            }
+            data.append(data_point)
+
+        # Save main trajectory CSV
+        logger.info("Saving main trajectory data...")
+        csv_path = results_dir / "md_trajectory_data.csv"
+        with csv_path.open("w", newline="") as f:
+            fieldnames = ["time", "temperature", "kinetic_energy", "potential_energy", "total_energy", "max_velocity"]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(data)
+        logger.info(f"Saved trajectory data to {csv_path}")
+
+        # Save dipole moments as separate CSV if available
+        if self.dipole_model is not None and self.dipole_moments:
+            logger.info("Saving dipole trajectory data...")
+            dipole_path = results_dir / "dipole_trajectory.csv"
+            dipole_data = []
+            for i, dipole in enumerate(self.dipole_moments):
+                dipole_data.append(
+                    {
+                        "time": self.times[i],
+                        "dipole_x": dipole[0],
+                        "dipole_y": dipole[1],
+                        "dipole_z": dipole[2],
+                        "dipole_magnitude": np.linalg.norm(dipole),
+                    }
+                )
+
+            with dipole_path.open("w", newline="") as f:
+                fieldnames = ["time", "dipole_x", "dipole_y", "dipole_z", "dipole_magnitude"]
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(dipole_data)
+            logger.info(f"Saved dipole trajectory to {dipole_path}")
+
+            # Compute and save IR spectrum
+            logger.info("Computing IR spectrum...")
+            freqs, spectrum = self.compute_ir_spectrum()
+            if freqs is not None and len(freqs) > 1:
+                # Save spectrum data to CSV with high precision
+                spectrum_path = results_dir / "ir_spectrum.csv"
+                with spectrum_path.open("w", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["frequency_cm-1", "intensity"])
+                    # Write all points with high precision
+                    for freq, inten in zip(freqs, spectrum, strict=True):
+                        writer.writerow([f"{freq:.6f}", f"{inten:.6f}"])
+                logger.info(f"Saved IR spectrum data to {spectrum_path}")
+                # Plot IR spectrum
+                logger.info("Plotting IR spectrum...")
+                plt.figure(figsize=(12, 6))
+                # Plot with inverted axes
+                plt.plot(freqs, spectrum)
+
+                # Customize axes
+                plt.xlabel("Wavenumber (cm⁻¹)")
+                plt.ylabel("Intensity (arb. units)")
+                plt.title("Dipole Spectrum")
+
+                # Set axis ranges
+                plt.xlim(4000, 100)  # Wavenumbers decrease left to right
+                plt.ylim(1.0, -0.02)
+
+                # Make plot cleaner
+                plt.gca().spines["top"].set_visible(False)
+                plt.gca().spines["right"].set_visible(False)
+
+                plt.tight_layout()
+                plot_path = results_dir / "ir_spectrum.png"
+                plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+                plt.close()
+                logger.info(f"Saved IR spectrum plot to {plot_path}")
+            else:
+                logger.warning("Could not compute IR spectrum - insufficient data points")
 
 
 def visualize_rotations(rotation_matrices: th.Tensor, save_path: str = "rotation_visualization.png") -> None:
@@ -515,117 +903,6 @@ def generate_equidistant_rotations(N, device="cpu") -> th.Tensor:
     rotation_matrices = th.bmm(U, V.transpose(1, 2))
 
     return rotation_matrices
-
-
-class MDEnergyTracker:
-    """Tracks energies and other observables during MD simulation"""
-
-    def __init__(self, atoms, timestep, target_temperature) -> None:
-        self.atoms = atoms  # Store reference to atoms object
-        self.timestep = timestep
-        self.target_temperature = target_temperature
-        self.initial_temp = atoms.get_temperature()
-        self.initial_kinetic = atoms.get_kinetic_energy()
-
-        # Initialize lists to store trajectory data
-        self.times = []
-        self.kinetic_energies = []
-        self.temperatures = []
-        self.max_velocities = []
-
-        logger.info(f"Initial temperature: {self.initial_temp:.1f} K")
-        logger.info(f"Initial kinetic energy: {self.initial_kinetic:.3f} eV")
-
-    def __call__(self) -> None:
-        """Called by ASE dynamics at each observation interval"""
-        kinetic = self.atoms.get_kinetic_energy()
-        temp = self.atoms.get_temperature()
-
-        self.times.append(len(self.times) * self.timestep * 10)  # Convert to fs
-        self.kinetic_energies.append(kinetic)
-        self.temperatures.append(temp)
-        self.max_velocities.append(np.max(np.linalg.norm(self.atoms.get_velocities(), axis=1)))
-
-    def plot(self, save_path) -> None:
-        """Plot evolution of available observables"""
-        plt.figure(figsize=(12, 9))
-
-        # Temperature subplot
-        plt.subplot(3, 1, 1)
-        plt.plot(self.times, self.temperatures, label="Current")
-        plt.axhline(
-            y=self.target_temperature,
-            color="r",
-            linestyle="--",
-            label=f"Target ({self.target_temperature}K)",
-        )
-        plt.fill_between(
-            self.times,
-            [self.target_temperature * 0.95] * len(self.times),
-            [self.target_temperature * 1.05] * len(self.times),
-            color="r",
-            alpha=0.1,
-        )
-        plt.xlabel("Time (fs)")
-        plt.ylabel("Temperature (K)")
-        plt.title("Temperature Evolution")
-        plt.legend()
-
-        # Kinetic energy subplot
-        plt.subplot(3, 1, 2)
-        plt.plot(self.times, self.kinetic_energies, label="Kinetic")
-        plt.xlabel("Time (fs)")
-        plt.ylabel("Energy (eV)")
-        plt.title("Kinetic Energy")
-        plt.legend()
-
-        # Velocity subplot
-        plt.subplot(3, 1, 3)
-        plt.plot(self.times, self.max_velocities)
-        plt.xlabel("Time (fs)")
-        plt.ylabel("Max Velocity (Å/fs)")
-        plt.title("Maximum Atomic Velocity")
-
-        plt.tight_layout()
-        plt.savefig(save_path)
-        plt.close()
-
-    def get_stats(self) -> dict:
-        """Return summary statistics of the simulation"""
-        return {
-            "avg_temperature": np.mean(self.temperatures),
-            "temp_std": np.std(self.temperatures),
-            "avg_kinetic": np.mean(self.kinetic_energies),
-            "kinetic_std": np.std(self.kinetic_energies),
-        }
-
-    def save_data(self, results_dir: Path) -> None:
-        """Save trajectory data to files"""
-        results_dir.mkdir(parents=True, exist_ok=True)
-
-        # Prepare data as list of dictionaries
-        data = []
-        for i in range(len(self.times)):
-            data_point = {
-                "time": self.times[i],
-                "temperature": self.temperatures[i],
-                "kinetic_energy": self.kinetic_energies[i],
-                "max_velocity": self.max_velocities[i],
-            }
-            data.append(data_point)
-
-        # Save as CSV
-        csv_path = results_dir / "md_trajectory_data.csv"
-        with csv_path.open("w", newline="") as f:
-            # Define the fieldnames (column headers)
-            fieldnames = ["time", "temperature", "kinetic_energy", "max_velocity"]
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-
-            # Write the header
-            writer.writeheader()
-
-            # Write the data
-            writer.writerows(data)
 
 
 if __name__ == "__main__":

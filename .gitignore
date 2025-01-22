@@ -161,12 +161,15 @@ cython_debug/
 #.idea/
 
 out
-./data
+data
 wandb
 
 outputs
 data_ar
 models
+/datasets
+anix
 
 **/*.sif
 .vscode/sftp.json
+data
