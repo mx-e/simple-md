@@ -171,4 +171,5 @@ models
 anix
 
 **/*.sif
+.vscode/sftp.json
 data
