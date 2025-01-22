@@ -69,7 +69,13 @@ def main(
     device, ctx = setup_device(), get_amp(ptdtype)
     model_run_conf_path = model_run_dir / ".hydra" / "config.yaml"
     model_run_conf = load_from_yaml(model_run_conf_path)
-    model_conf = model_run_conf["train"]["model"]
+    if "ft" in model_run_conf:
+        logger.info("detected fine-tuned model, loading pretrain model configuration")
+        model_pt_conf_path = model_run_dir / ".hydra" / "model_pretrain_conf.yaml"
+        model_pt_conf = load_from_yaml(model_pt_conf_path)
+        model_conf = model_pt_conf["model"]
+    elif "train" in model_run_conf:
+        model_conf = model_run_conf["train"]["model"]
     model = instantiate(model_conf)
     checkpoint_path = Path(model_run_dir) / "ckpts" / (checkpoint_name + ".pth")
     load_checkpoint(model, checkpoint_path)

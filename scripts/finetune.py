@@ -1,6 +1,6 @@
 #! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data --bind /home/bbdc2/quantum/max/:/data container.sif python
-from functools import partial
 import json
+from functools import partial
 from pathlib import Path
 from typing import Literal
 
@@ -13,12 +13,12 @@ from hydra_zen import builds, instantiate, load_from_yaml, store
 from hydra_zen.typing import Partial
 from lib.data.loaders import get_loaders
 from lib.datasets import (
+    get_ko2020_dataset,
     get_md17_22_dataset,
     get_qcml_dataset,
     get_qm7x_dataset,
     get_qm7x_pbe0_dataset,
     get_rmd17_dataset,
-    get_ko2020_dataset,
 )
 from lib.ema import EMAModel
 from lib.loss import LossModule
