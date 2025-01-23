@@ -66,22 +66,22 @@ beam = ["apache-beam[gcp] (>=2.50.0)", "google-cloud-storage (>=2.11.0)", "tenso
 
 [[package]]
 name = "ase"
-version = "3.23.0"
+version = "3.24.0"
 description = "Atomic Simulation Environment"
 optional = false
-python-versions = ">=3.8"
+python-versions = ">=3.9"
 files = [
-    {file = "ase-3.23.0-py3-none-any.whl", hash = "sha256:52060410e720b6c701ea1ebecfdeb5ec6f9c1c63edc7cee68c15bd66d226dd43"},
-    {file = "ase-3.23.0.tar.gz", hash = "sha256:91a2aa31d89bd90b0efdfe4a7e84264f32828b2abfc9f38e65e041ad76fec8ae"},
+    {file = "ase-3.24.0-py3-none-any.whl", hash = "sha256:974922df87ef4ec8cf1140359a55ab4c4dc55c38e26876bdd9c00968da1f463c"},
+    {file = "ase-3.24.0.tar.gz", hash = "sha256:9acc93d6daaf48cd27b844c56f8bf49428b9db0542faa3cc30d9d5b8e1842195"},
 ]
 
 [package.dependencies]
 matplotlib = ">=3.3.4"
-numpy = ">=1.18.5"
+numpy = ">=1.19.5"
 scipy = ">=1.6.0"
 
 [package.extras]
-docs = ["pillow", "sphinx", "sphinx-rtd-theme"]
+docs = ["pillow", "sphinx", "sphinx_rtd_theme"]
 spglib = ["spglib (>=1.9)"]
 test = ["pytest (>=7.0.0)", "pytest-xdist (>=2.1.0)"]
 
@@ -1819,6 +1819,7 @@ description = "Nvidia JIT LTO Library"
 optional = false
 python-versions = ">=3"
 files = [
+    {file = "nvidia_nvjitlink_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:4abe7fef64914ccfa909bc2ba39739670ecc9e820c83ccc7a6ed414122599b83"},
     {file = "nvidia_nvjitlink_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:06b3b9b25bf3f8af351d664978ca26a16d2c5127dbd53c0497e28d1fb9611d57"},
     {file = "nvidia_nvjitlink_cu12-12.4.127-py3-none-win_amd64.whl", hash = "sha256:fd9020c501d27d135f983c6d3e244b197a7ccad769e34df53a42e276b0e25fa1"},
 ]
@@ -3572,4 +3573,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "3c3fb33f511084ac9a2a13cd36dd06284dee43ee3a5da33cfa30201636be7ac3"
+content-hash = "926733d799c93194122910034295fe232e45e0a0c3a779bd0ad3ff3689f356b7"

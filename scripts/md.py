@@ -13,6 +13,8 @@ from ase.io import read, trajectory, write
 from ase.md.andersen import Andersen
 from ase.md.langevin import Langevin  # Added Langevin thermostat
 from ase.md.npt import NPT  # Added NPT with Nosé-Hoover
+from ase.md.nose_hoover_chain import NoseHooverChainNVT  # Added Nose-Hoover thermostat
+from ase.md.bussi import Bussi  # Added Bussi thermostat
 from ase.md.nvtberendsen import NVTBerendsen  # Added Berendsen thermostat
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from conf.base_conf import BaseConfig, configure_main
@@ -27,6 +29,10 @@ from lib.utils.run import run
 from loguru import logger
 from matplotlib import pyplot as plt
 from omegaconf import MISSING
+from hydra_zen import builds, store
+
+pbuilds = partial(builds, zen_partial=True)
+
 
 BOHR_TO_ANG = 0.529177249  # Bohr to Angstrom
 HARTREE_TO_EV = 27.211386245988  # Hartree to eV
@@ -34,16 +40,61 @@ ANG_TO_BOHR = 1.0 / 0.529177249
 FORCE_CONVERSION = HARTREE_TO_EV / BOHR_TO_ANG
 
 
-@configure_main(extra_defaults=[])
+TAUT_FS = 100.0 * units.fs  # Thermostat time constant in fs
+TEMP = 300  # K
+
+therm_nose_hoover = pbuilds(
+    NoseHooverChainNVT,
+    tdamp=100.0,
+    tchain=3,
+    tloop=1,
+)
+
+therm_langevin = pbuilds(
+    Langevin,
+    friction=(1.0 / TAUT_FS),
+)
+therm_npt = pbuilds(
+    NPT,
+    externalstress=0.0,
+    ttime=TAUT_FS,
+    pfactor=None,
+)
+
+therm_berendsen = pbuilds(
+    NVTBerendsen,
+    taut=TAUT_FS,
+)
+
+therm_andersen = pbuilds(
+    Andersen,
+    andersen_prob=0.01,
+)
+
+therm_bussi = pbuilds(
+    Bussi,
+    taut=TAUT_FS,
+)
+
+
+thermostat_store = store(group="thermostat")
+thermostat_store(therm_nose_hoover, name="nose_hoover")
+thermostat_store(therm_langevin, name="langevin")
+thermostat_store(therm_npt, name="npt")
+thermostat_store(therm_berendsen, name="berendsen")
+thermostat_store(therm_andersen, name="andersen")
+thermostat_store(therm_bussi, name="bussi")
+
+
+@configure_main(extra_defaults=[{"thermostat": "nose_hoover"}])
 def main(
     cfg: BaseConfig,
-    temperature: float = 300,
     timestep: float = 0.5,
-    n_data_aug: int = 64,
+    n_data_aug: int = 32,
     step_wise_random: bool = False,
     n_steps: int = 40000,
-    thermostat_type: Literal["nose_hoover", "berendsen", "andersen", "langevin"] = "langevin",
-    thermostat_taut: float = 999999999999,
+    thermostat=MISSING,
+    temperature: float = 300,
     init_struct_dir: Path = "data_md",
     init_struct: Literal[
         "15_ala",
@@ -96,16 +147,6 @@ def main(
     init_struct_path = Path(init_struct_dir) / (init_struct + ".xyz")
     atoms = read(init_struct_path)
 
-    if thermostat_type.lower() == "nose_hoover":
-        atoms.set_cell(
-            [
-                [120.0, 0.0, 0.0],  # Gives ~25Å buffer on each side
-                [0.0, 120.0, 0.0],
-                [0.0, 0.0, 120.0],
-            ]
-        )
-        atoms.set_pbc(False)
-
     if n_data_aug > 1:
         logger.info(f"Generating {n_data_aug} equidistant rotations...")
         rotations = generate_equidistant_rotations(n_data_aug)
@@ -132,8 +173,7 @@ def main(
         step_wise_random_aug=step_wise_random,
         steps=n_steps,
         trajectory_file=traj_path,
-        thermostat_type=thermostat_type,
-        taut=thermostat_taut,
+        thermostat=thermostat,
         save_last_n_steps=last_n_steps,
         traj_log_interval=traj_log_interval,
     )
@@ -153,14 +193,13 @@ def run_md_simulation(
     model,
     ctx,
     device,
-    temperature=300,  # K
-    timestep=0.5,  # fs
-    rotations=None,
-    step_wise_random_aug=False,
-    steps=10000,
+    temperature,  # K
+    timestep,  # fs
+    rotations,
+    step_wise_random_aug,
+    steps,
+    thermostat,
     trajectory_file="md_trajectory.traj",
-    thermostat_type="Nose-Hoover",  # Added thermostat selection
-    taut=100.0,  # Thermostat time constant in fs
     save_last_n_steps=None,
     dipole_model=None,
     traj_log_interval=10,
@@ -177,37 +216,16 @@ def run_md_simulation(
 
     # Initialize velocities
     MaxwellBoltzmannDistribution(atoms, temperature_K=temperature)
-
-    # Set up dynamics with selected thermostat
-    if thermostat_type.lower() == "nose_hoover":
-        # Nosé-Hoover thermostat (NPT ensemble)
-        # The time constant is converted to ASE units
-        taut_ase = taut * units.fs
-        dyn = NPT(
-            atoms,
-            timestep * units.fs,
-            temperature_K=temperature,
-            externalstress=0.0,
-            ttime=taut_ase,
-            pfactor=None,
-        )
-    elif thermostat_type.lower() == "berendsen":
-        # Berendsen thermostat (NVT ensemble)
-        dyn = NVTBerendsen(atoms, timestep * units.fs, temperature_K=temperature, taut=taut * units.fs)
-    elif thermostat_type.lower() == "andersen":
-        # Andersen thermostat
-        dyn = Andersen(atoms, timestep * units.fs, temperature_K=temperature, andersen_prob=0.01)
-    elif thermostat_type.lower() == "langevin":
-        # Langevin thermostat
-        # friction parameter is 1/taut
-        dyn = Langevin(
-            atoms,
-            timestep * units.fs,
-            temperature_K=temperature,
-            friction=1.0 / (taut),
-        )
-    else:
-        raise ValueError(f"Unknown thermostat type: {thermostat_type}")
+    # if thermostat_type.lower() == "nose_hoover":
+    #     atoms.set_cell(
+    #         [
+    #             [120.0, 0.0, 0.0],  # Gives ~25Å buffer on each side
+    #             [0.0, 120.0, 0.0],
+    #             [0.0, 0.0, 120.0],
+    #         ]
+    #     )
+    #     atoms.set_pbc(False)
+    dyn = thermostat(atoms=atoms, timestep=timestep * units.fs, temperature_K=temperature)
 
     # Set up trajectory file and energy tracker
     traj = trajectory.Trajectory(trajectory_file, "w", atoms)
@@ -227,7 +245,7 @@ def run_md_simulation(
         frame.info["comment"] = (
             f"time={len(xyz_trajectory) * timestep:.1f}fs "
             f"temp={atoms.get_temperature():.1f}K "
-            f"thermostat={thermostat_type}"
+            f"thermostat={thermostat.__class__.__name__}"
         )
         xyz_trajectory.append(frame)
 
@@ -237,9 +255,9 @@ def run_md_simulation(
     dyn.attach(energy_tracker, interval=1)
 
     # Run dynamics with improved monitoring
-    logger.info(f"Starting MD simulation with {thermostat_type} thermostat for {steps} steps...")
+    logger.info(f"Starting MD simulation with {thermostat.__class__.__name__} thermostat for {steps} steps...")
     logger.info(f"Target temperature: {temperature}K")
-    logger.info(f"Thermostat time constant: {taut}fs")
+    logger.info(f"Thermostat params: {thermostat}")
 
     for i in range(steps):
         dyn.run(1)
@@ -905,4 +923,5 @@ def generate_equidistant_rotations(N, device="cpu") -> th.Tensor:
 
 
 if __name__ == "__main__":
+    thermostat_store.add_to_hydra_store()
     run(main)
