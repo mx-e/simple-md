@@ -30,6 +30,7 @@ from loguru import logger
 from matplotlib import pyplot as plt
 from omegaconf import MISSING
 from hydra_zen import builds, store
+import wandb
 
 pbuilds = partial(builds, zen_partial=True)
 
@@ -90,9 +91,9 @@ thermostat_store(therm_bussi, name="bussi")
 def main(
     cfg: BaseConfig,
     timestep: float = 0.5,
-    n_data_aug: int = 32,
+    n_data_aug: int = 8,
     step_wise_random: bool = False,
-    n_steps: int = 40000,
+    n_steps: int = 5000,
     thermostat=MISSING,
     temperature: float = 300,
     init_struct_dir: Path = "data_md",
@@ -106,7 +107,7 @@ def main(
         "silver_trimer",
     ] = "ethanol",
     last_n_steps: int
-    | None = 10000,  # export the last n steps of the trajectory separately and use those for the dipole spectrum
+    | None = None,  # export the last n steps of the trajectory separately and use those for the dipole spectrum
     model_run_dir: Path = MISSING,
     checkpoint_name: str = "best_model",
     dipole_model_run_dir: Path | None = None,
@@ -157,6 +158,9 @@ def main(
         stats = analyze_rotation_distribution(rotations)
         logger.info(f"Rotation Distribution Statistics: {stats}")
 
+    eval_artifact = None
+    if cfg.wandb is not None:
+        eval_artifact = wandb.Artifact("md_eval", type="evaluation")
     # Run MD simulation
     traj_path = Path(job_dir) / "md_results" / "md_trajectory.traj"
     if last_n_steps is not None:
@@ -176,10 +180,13 @@ def main(
         thermostat=thermostat,
         save_last_n_steps=last_n_steps,
         traj_log_interval=traj_log_interval,
+        wandb_artifact=eval_artifact,
     )
     # Save and plot results
     energy_tracker.save_data(results_dir)
     energy_tracker.plot(results_dir / "md_analysis.png")
+    if eval_artifact is not None:
+        cfg.wandb.run.log_artifact(eval_artifact)
 
     # Print final statistics
     final_stats = energy_tracker.get_stats()
@@ -203,6 +210,7 @@ def run_md_simulation(
     save_last_n_steps=None,
     dipole_model=None,
     traj_log_interval=10,
+    wandb_artifact=None,
 ) -> "MDEnergyTracker":
     # Set up calculator
     calculator = MLCalculator(
@@ -237,6 +245,7 @@ def run_md_simulation(
         dipole_model=dipole_model,
         last_n_steps=save_last_n_steps,
         traj_log_interval=traj_log_interval,
+        wandb_artifact=wandb_artifact,
     )
     xyz_trajectory = []
 
@@ -290,6 +299,9 @@ def run_md_simulation(
         frame.set_cell([0, 0, 0])
         frame.set_pbc(False)
     write(xyz_file, xyz_trajectory)
+
+    if wandb_artifact is not None:
+        wandb_artifact.add_file(xyz_file)
 
     if save_last_n_steps is not None and traj_log_interval == 1:
         last_n_traj = xyz_trajectory[-save_last_n_steps:]
@@ -389,7 +401,15 @@ class MDEnergyTracker:
     """Tracks energies and other observables during MD simulation"""
 
     def __init__(
-        self, atoms, timestep, target_temperature, device, dipole_model=None, last_n_steps=0, traj_log_interval=1
+        self,
+        atoms,
+        timestep,
+        target_temperature,
+        device,
+        dipole_model=None,
+        last_n_steps=0,
+        traj_log_interval=1,
+        wandb_artifact=None,
     ) -> None:
         self.atoms = atoms  # Store reference to atoms object
         self.timestep = timestep
@@ -399,6 +419,7 @@ class MDEnergyTracker:
         self.dipole_model = dipole_model
         self.last_n_steps = last_n_steps
         self.traj_log_interval = traj_log_interval
+        self.wandb_artifact = wandb_artifact
 
         # Initialize lists to store trajectory data
         self.times = []
@@ -613,6 +634,8 @@ class MDEnergyTracker:
         plt.tight_layout()
         plt.savefig(save_path)
         plt.close()
+        if self.wandb_artifact is not None:
+            self.wandb_artifact.add_file(save_path)
 
     def get_stats(self) -> dict:
         """Return summary statistics of the simulation"""
@@ -664,6 +687,8 @@ class MDEnergyTracker:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(data)
+        if self.wandb_artifact is not None:
+            self.wandb_artifact.add_file(csv_path)
         logger.info(f"Saved trajectory data to {csv_path}")
 
         # Save dipole moments as separate CSV if available
@@ -687,6 +712,8 @@ class MDEnergyTracker:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(dipole_data)
+            if self.wandb_artifact is not None:
+                self.wandb_artifact.add_file(dipole_path)
             logger.info(f"Saved dipole trajectory to {dipole_path}")
 
             # Compute and save IR spectrum
@@ -725,6 +752,8 @@ class MDEnergyTracker:
                 plot_path = results_dir / "ir_spectrum.png"
                 plt.savefig(plot_path, dpi=300, bbox_inches="tight")
                 plt.close()
+                if self.wandb_artifact is not None:
+                    self.wandb_artifact.add_file(plot_path)
                 logger.info(f"Saved IR spectrum plot to {plot_path}")
             else:
                 logger.warning("Could not compute IR spectrum - insufficient data points")
