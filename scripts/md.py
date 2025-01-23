@@ -11,25 +11,26 @@ from ase import units
 from ase.calculators.calculator import Calculator, all_changes
 from ase.io import read, trajectory, write
 from ase.md.andersen import Andersen
-from ase.md.langevin import Langevin  # Added Langevin thermostat
-from ase.md.npt import NPT  # Added NPT with Nosé-Hoover
-from ase.md.nose_hoover_chain import NoseHooverChainNVT  # Added Nose-Hoover thermostat
 from ase.md.bussi import Bussi  # Added Bussi thermostat
+from ase.md.langevin import Langevin  # Added Langevin thermostat
+from ase.md.nose_hoover_chain import NoseHooverChainNVT  # Added Nose-Hoover thermostat
+from ase.md.npt import NPT  # Added NPT with Nosé-Hoover
 from ase.md.nvtberendsen import NVTBerendsen  # Added Berendsen thermostat
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from conf.base_conf import BaseConfig, configure_main
-from hydra_zen import instantiate, load_from_yaml
+from hydra_zen import builds, instantiate, load_from_yaml, store
 from lib.data.loaders import batch_tall, collate_fn
 from lib.data.transforms import center_positions_on_center_of_mass, center_positions_on_centroid, get_random_rotations
 from lib.types import Property as Props
 from lib.utils.checkpoint import load_checkpoint
 from lib.utils.dist import get_amp, setup_device
+from lib.utils.filters import remove_net_force, remove_net_torque
 from lib.utils.helpers import get_hydra_output_dir
 from lib.utils.run import run
 from loguru import logger
 from matplotlib import pyplot as plt
 from omegaconf import MISSING
-from hydra_zen import builds, store
+
 import wandb
 
 pbuilds = partial(builds, zen_partial=True)
@@ -91,9 +92,9 @@ thermostat_store(therm_bussi, name="bussi")
 def main(
     cfg: BaseConfig,
     timestep: float = 0.5,
-    n_data_aug: int = 8,
+    n_data_aug: int = 16,
     step_wise_random: bool = False,
-    n_steps: int = 5000,
+    n_steps: int = 40000,
     thermostat=MISSING,
     temperature: float = 300,
     init_struct_dir: Path = "data_md",
@@ -114,6 +115,8 @@ def main(
     dipole_checkpoint_name: str = "best_model",
     traj_log_interval: int = 10,
     ptdtype: Literal["float32", "bfloat16", "float16"] = "float32",
+    remove_net_force: bool = True,
+    remove_net_torque: bool = True,
 ) -> None:
     logger.info(f"Running with base config: {cfg}")
     mp.set_start_method("spawn", force=True)
@@ -181,6 +184,8 @@ def main(
         save_last_n_steps=last_n_steps,
         traj_log_interval=traj_log_interval,
         wandb_artifact=eval_artifact,
+        remove_net_force=remove_net_force,
+        remove_net_torque=remove_net_torque,
     )
     # Save and plot results
     energy_tracker.save_data(results_dir)
@@ -206,6 +211,8 @@ def run_md_simulation(
     step_wise_random_aug,
     steps,
     thermostat,
+    remove_net_force,
+    remove_net_torque,
     trajectory_file="md_trajectory.traj",
     save_last_n_steps=None,
     dipole_model=None,
@@ -219,6 +226,8 @@ def run_md_simulation(
         ctx,
         rotations=rotations,
         step_wise_random_aug=step_wise_random_aug,
+        remove_net_force=remove_net_force,
+        remove_net_torque=remove_net_torque,
     )
     atoms.calc = calculator
 
@@ -319,7 +328,9 @@ class MLCalculator(Calculator):
     implemented_properties = ["forces"]
     not_implemented_properties = ["energy"]
 
-    def __init__(self, model, device, ctx, rotations=None, step_wise_random_aug=False) -> None:
+    def __init__(
+        self, model, device, ctx, remove_net_force, remove_net_torque, rotations=None, step_wise_random_aug=False
+    ) -> None:
         super().__init__()
         self.model = model
         self.device = device
@@ -341,17 +352,17 @@ class MLCalculator(Calculator):
         )
         self.rotations = rotations
         self.step_wise_random_aug = step_wise_random_aug
+        self.remove_net_force = remove_net_force
+        self.remove_net_torque = remove_net_torque
 
     def convert_atoms_to_model_input(self, atoms, rotations) -> tuple[dict, th.Tensor]:
         """Convert ASE Atoms object to model input format"""
         positions_bohr = atoms.positions * ANG_TO_BOHR
-        spin = atoms.get_initial_magnetic_moments().sum()
-        multiplicity = 2 * abs(spin) + 1
         data = {
             "positions": positions_bohr,
             "atomic_numbers": atoms.numbers,
-            "charge": atoms.get_initial_charges().sum(),
-            "multiplicity": multiplicity,
+            "charge": 0,
+            "multiplicity": 1,
         }
 
         data = self.collate_fn([data])
@@ -383,6 +394,15 @@ class MLCalculator(Calculator):
         # Get predictions from model
         with self.ctx:
             outputs = self.model(data)
+
+        n_nodes = (data[Props.atomic_numbers] != 0).sum(dim=1)  # (b,)
+        if self.remove_net_force:
+            outputs[Props.forces] = remove_net_force(forces=outputs[Props.forces], n_nodes=n_nodes)
+
+        if self.remove_net_torque:
+            outputs[Props.forces] = remove_net_torque(
+                positions=data[Props.positions], forces=outputs[Props.forces], n_nodes=n_nodes
+            )
 
         if self.rotations is not None:
             outputs[Props.forces] = th.bmm(outputs[Props.forces], reverse_rotations)
