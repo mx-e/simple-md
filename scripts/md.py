@@ -26,6 +26,11 @@ from lib.utils.checkpoint import load_checkpoint
 from lib.utils.dist import get_amp, setup_device
 from lib.utils.filters import remove_net_force, remove_net_torque
 from lib.utils.helpers import get_hydra_output_dir
+from lib.utils.augmentation_utils import (
+    generate_equidistant_rotations,
+    visualize_rotations,
+    analyze_rotation_distribution,
+)
 from lib.utils.run import run
 from loguru import logger
 from matplotlib import pyplot as plt
@@ -69,7 +74,7 @@ def main(
     timestep: float = 0.5,
     n_data_aug: int = 16,
     step_wise_random: bool = False,
-    n_steps: int = 40000,
+    n_steps: int = 10000,
     thermostat: Literal["nose_hoover", "langevin", "bussi"] = "nose_hoover",
     temperature: float = 300,
     tau: float = 100.0,
@@ -206,15 +211,6 @@ def run_md_simulation(
 
     # Initialize velocities
     MaxwellBoltzmannDistribution(atoms, temperature_K=temperature)
-    # if thermostat_type.lower() == "nose_hoover":
-    #     atoms.set_cell(
-    #         [
-    #             [120.0, 0.0, 0.0],  # Gives ~25Å buffer on each side
-    #             [0.0, 120.0, 0.0],
-    #             [0.0, 0.0, 120.0],
-    #         ]
-    #     )
-    #     atoms.set_pbc(False)
 
     dyn = get_thermostat(thermostat, atoms, temperature, timestep, tau)
 
@@ -751,198 +747,6 @@ class MDEnergyTracker:
                 logger.info(f"Saved IR spectrum plot to {plot_path}")
             else:
                 logger.warning("Could not compute IR spectrum - insufficient data points")
-
-
-def visualize_rotations(rotation_matrices: th.Tensor, save_path: str = "rotation_visualization.png") -> None:
-    # Convert to numpy for matplotlib
-    R = rotation_matrices.numpy()
-    N = len(R)
-
-    # Create standard basis vectors
-    e1 = np.array([1, 0, 0])
-    e2 = np.array([0, 1, 0])
-    e3 = np.array([0, 0, 1])
-
-    # Calculate rotated versions of each basis vector
-    rotated_e1 = np.array([R[i] @ e1 for i in range(N)])
-    rotated_e2 = np.array([R[i] @ e2 for i in range(N)])
-    rotated_e3 = np.array([R[i] @ e3 for i in range(N)])
-
-    # Create figure with subplots
-    fig = plt.figure(figsize=(20, 10))
-
-    # 3D plot
-    ax1 = fig.add_subplot(121, projection="3d")
-
-    # Plot rotated basis vectors
-    ax1.scatter(
-        rotated_e1[:, 0],
-        rotated_e1[:, 1],
-        rotated_e1[:, 2],
-        c="r",
-        label="x-axis",
-        alpha=0.6,
-    )
-    ax1.scatter(
-        rotated_e2[:, 0],
-        rotated_e2[:, 1],
-        rotated_e2[:, 2],
-        c="g",
-        label="y-axis",
-        alpha=0.6,
-    )
-    ax1.scatter(
-        rotated_e3[:, 0],
-        rotated_e3[:, 1],
-        rotated_e3[:, 2],
-        c="b",
-        label="z-axis",
-        alpha=0.6,
-    )
-
-    # Draw unit sphere wireframe
-    u = np.linspace(0, 2 * np.pi, 100)
-    v = np.linspace(0, np.pi, 100)
-    x = np.outer(np.cos(u), np.sin(v))
-    y = np.outer(np.sin(u), np.sin(v))
-    z = np.outer(np.ones(np.size(u)), np.cos(v))
-    ax1.plot_wireframe(x, y, z, color="gray", alpha=0.1)
-
-    # Set labels and title
-    ax1.set_xlabel("X")
-    ax1.set_ylabel("Y")
-    ax1.set_zlabel("Z")
-    ax1.set_title(f"Distribution of {N} Rotations\n(Rotated Basis Vectors)")
-    ax1.legend()
-
-    # Create 2D projections subplot
-    ax2 = fig.add_subplot(122)
-
-    # Plot XY projection
-    ax2.scatter(rotated_e1[:, 0], rotated_e1[:, 1], c="r", alpha=0.3, label="x-axis")
-    ax2.scatter(rotated_e2[:, 0], rotated_e2[:, 1], c="g", alpha=0.3, label="y-axis")
-    ax2.scatter(rotated_e3[:, 0], rotated_e3[:, 1], c="b", alpha=0.3, label="z-axis")
-
-    # Draw unit circle
-    circle = plt.Circle((0, 0), 1, fill=False, color="gray", linestyle="--", alpha=0.3)
-    ax2.add_artist(circle)
-
-    # Set labels and title
-    ax2.set_xlabel("X")
-    ax2.set_ylabel("Y")
-    ax2.set_title("XY Projection of Rotations")
-    ax2.set_aspect("equal")
-    ax2.grid(True, alpha=0.3)
-    ax2.legend()
-
-    # Adjust layout and save
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    plt.close()
-
-
-def analyze_rotation_distribution(rotation_matrices: th.Tensor) -> dict:
-    N = len(rotation_matrices)
-
-    # Compute pairwise angles between rotations
-    angles = []
-    for i in range(N):
-        for j in range(i + 1, N):
-            # Compute relative rotation
-            R_rel = th.mm(rotation_matrices[i], rotation_matrices[j].t())
-
-            # Convert to angle (in degrees)
-            theta = th.acos(th.clamp((th.trace(R_rel) - 1) / 2, -1.0, 1.0)) * 180 / np.pi
-            angles.append(theta.item())
-
-    angles = np.array(angles)
-    stats = {
-        "min_angle": np.min(angles),
-        "max_angle": np.max(angles),
-        "mean_angle": np.mean(angles),
-        "std_angle": np.std(angles),
-    }
-    return stats
-
-
-# TODO: Check how this function works, sth is weird
-def generate_equidistant_rotations(N, device="cpu") -> th.Tensor:
-    # Generate points on a Fibonacci sphere
-    phi = (1 + np.sqrt(5)) / 2  # golden ratio
-    indices = th.arange(N, dtype=th.float32, device=device)
-
-    # Calculate spherical coordinates
-    theta = 2 * np.pi * indices / phi
-    z = 1 - (2 * indices + 1) / N
-    radius = th.sqrt(1 - z * z)
-
-    # Convert to Cartesian coordinates
-    x = radius * th.cos(theta)
-    y = radius * th.sin(theta)
-    z = z
-
-    # Stack into points
-    points = th.stack([x, y, z], dim=1)
-    points = points / th.norm(points, dim=1, keepdim=True)
-
-    # Convert points to rotation matrices using quaternions
-    def points_to_quaternions(points) -> th.Tensor:
-        """Convert points on unit sphere to quaternions."""
-        # Use the method described in "Uniform Random Rotations" by Ken Shoemake
-        u = th.rand(N, dtype=th.float32, device=device)
-        v = th.rand(N, dtype=th.float32, device=device)
-        w = th.rand(N, dtype=th.float32, device=device)
-
-        # Convert uniform random numbers to quaternion
-        q1 = th.sqrt(1 - u) * th.sin(2 * np.pi * v)
-        q2 = th.sqrt(1 - u) * th.cos(2 * np.pi * v)
-        q3 = th.sqrt(u) * th.sin(2 * np.pi * w)
-        q4 = th.sqrt(u) * th.cos(2 * np.pi * w)
-
-        return th.stack([q1, q2, q3, q4], dim=1)
-
-    def quaternion_to_rotation_matrix(quaternion) -> th.Tensor:
-        """Convert quaternions to rotation matrices."""
-        q0, q1, q2, q3 = (
-            quaternion[:, 0],
-            quaternion[:, 1],
-            quaternion[:, 2],
-            quaternion[:, 3],
-        )
-
-        # First row
-        r00 = 1 - 2 * (q2 * q2 + q3 * q3)
-        r01 = 2 * (q1 * q2 - q0 * q3)
-        r02 = 2 * (q1 * q3 + q0 * q2)
-
-        # Second row
-        r10 = 2 * (q1 * q2 + q0 * q3)
-        r11 = 1 - 2 * (q1 * q1 + q3 * q3)
-        r12 = 2 * (q2 * q3 - q0 * q1)
-
-        # Third row
-        r20 = 2 * (q1 * q3 - q0 * q2)
-        r21 = 2 * (q2 * q3 + q0 * q1)
-        r22 = 1 - 2 * (q1 * q1 + q2 * q2)
-
-        return th.stack(
-            [
-                th.stack([r00, r01, r02], dim=1),
-                th.stack([r10, r11, r12], dim=1),
-                th.stack([r20, r21, r22], dim=1),
-            ],
-            dim=1,
-        )
-
-    # Generate quaternions and convert to rotation matrices
-    quaternions = points_to_quaternions(points)
-    rotation_matrices = quaternion_to_rotation_matrix(quaternions)
-
-    # Ensure proper orthogonality (due to numerical precision)
-    U, _, V = th.svd(rotation_matrices)
-    rotation_matrices = th.bmm(U, V.transpose(1, 2))
-
-    return rotation_matrices
 
 
 if __name__ == "__main__":
