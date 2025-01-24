@@ -42,61 +42,37 @@ ANG_TO_BOHR = 1.0 / 0.529177249
 FORCE_CONVERSION = HARTREE_TO_EV / BOHR_TO_ANG
 
 
-TAUT_FS = 100.0 * units.fs  # Thermostat time constant in fs
-TEMP = 300  # K
-
-therm_nose_hoover = pbuilds(
-    NoseHooverChainNVT,
-    tdamp=100.0,
-    tchain=3,
-    tloop=1,
-)
-
-therm_langevin = pbuilds(
-    Langevin,
-    friction=(1.0 / TAUT_FS),
-)
-therm_npt = pbuilds(
-    NPT,
-    externalstress=0.0,
-    ttime=TAUT_FS,
-    pfactor=None,
-)
-
-therm_berendsen = pbuilds(
-    NVTBerendsen,
-    taut=TAUT_FS,
-)
-
-therm_andersen = pbuilds(
-    Andersen,
-    andersen_prob=0.01,
-)
-
-therm_bussi = pbuilds(
-    Bussi,
-    taut=TAUT_FS,
-)
+def get_thermostat(
+    thermostat: Literal["nose_hoover", "langevin", "bussi"],
+    atoms,
+    temperature: float,
+    timestep: float,
+    tau: float,
+    nh_chain_len: int = 3,
+) -> NoseHooverChainNVT | Langevin | Bussi:
+    match thermostat:
+        case "nose_hoover":
+            return NoseHooverChainNVT(
+                atoms, tchain=nh_chain_len, tloop=1, temperature_K=temperature, timestep=timestep * units.fs, tdamp=tau
+            )
+        case "langevin":
+            return Langevin(atoms, temperature_K=temperature, timestep=timestep * units.fs, gamma=1.0 / tau)
+        case "bussi":
+            return Bussi(atoms, temperature_K=temperature, timestep=timestep * units.fs, tau=tau)
+        case _:
+            raise ValueError(f"Unknown thermostat: {thermostat}")
 
 
-thermostat_store = store(group="thermostat")
-thermostat_store(therm_nose_hoover, name="nose_hoover")
-thermostat_store(therm_langevin, name="langevin")
-thermostat_store(therm_npt, name="npt")
-thermostat_store(therm_berendsen, name="berendsen")
-thermostat_store(therm_andersen, name="andersen")
-thermostat_store(therm_bussi, name="bussi")
-
-
-@configure_main(extra_defaults=[{"thermostat": "nose_hoover"}])
+@configure_main(extra_defaults=[])
 def main(
     cfg: BaseConfig,
     timestep: float = 0.5,
     n_data_aug: int = 16,
     step_wise_random: bool = False,
     n_steps: int = 40000,
-    thermostat=MISSING,
+    thermostat: Literal["nose_hoover", "langevin", "bussi"] = "nose_hoover",
     temperature: float = 300,
+    tau: float = 100.0,
     init_struct_dir: Path = "data_md",
     init_struct: Literal[
         "15_ala",
@@ -176,6 +152,7 @@ def main(
         device=device,
         temperature=temperature,
         timestep=timestep,
+        tau=tau,
         rotations=rotations.to(device) if n_data_aug > 1 else None,
         step_wise_random_aug=step_wise_random,
         steps=n_steps,
@@ -206,6 +183,7 @@ def run_md_simulation(
     ctx,
     device,
     temperature,  # K
+    tau,
     timestep,  # fs
     rotations,
     step_wise_random_aug,
@@ -242,7 +220,8 @@ def run_md_simulation(
     #         ]
     #     )
     #     atoms.set_pbc(False)
-    dyn = thermostat(atoms=atoms, timestep=timestep * units.fs, temperature_K=temperature)
+
+    dyn = get_thermostat(thermostat, atoms,  temperature, timestep, tau)
 
     # Set up trajectory file and energy tracker
     traj = trajectory.Trajectory(trajectory_file, "w", atoms)
@@ -972,5 +951,4 @@ def generate_equidistant_rotations(N, device="cpu") -> th.Tensor:
 
 
 if __name__ == "__main__":
-    thermostat_store.add_to_hydra_store()
     run(main)
