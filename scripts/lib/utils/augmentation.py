@@ -5,27 +5,22 @@ from loguru import logger
 
 
 def generate_equidistant_rotations(N, device="cpu", optimize: bool = True) -> th.Tensor:
-    # Generate points on a Fibonacci sphere
     phi = (1 + np.sqrt(5)) / 2  # golden ratio
     indices = th.arange(N, dtype=th.float32, device=device)
 
-    # Calculate spherical coordinates
     theta = 2 * np.pi * indices / phi
     z = 1 - (2 * indices + 1) / N
     radius = th.sqrt(1 - z * z)
 
-    # Convert to Cartesian coordinates
     x = radius * th.cos(theta)
     y = radius * th.sin(theta)
     z = z
 
-    # Stack into points
     points = th.stack([x, y, z], dim=1)
     points = points / th.norm(points, dim=1, keepdim=True)
     if optimize:
         points = optimize_rotation_distribution(points)
 
-    # Convert to rotation matrices
     R = th.stack([th.tensor(vector_to_rot_matrix(points[i].numpy())) for i in range(N)], dim=0)
     return R
 
@@ -37,12 +32,10 @@ def visualize_rotations(rotation_matrices: th.Tensor, save_path: str = "rotation
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 7))
 
-    # Create circle for hemisphere boundary
     theta = np.linspace(0, 2 * np.pi, 100)
     circle_x = np.cos(theta)
     circle_y = np.sin(theta)
 
-    # Front hemisphere (z >= 0)
     front_mask = points[:, 2] >= 0
     front_points = points[front_mask]
     ax1.plot(circle_x, circle_y, "k-", alpha=0.2)
@@ -51,14 +44,12 @@ def visualize_rotations(rotation_matrices: th.Tensor, save_path: str = "rotation
     )
     ax1.set_title("Front Hemisphere (z ≥ 0)")
 
-    # Back hemisphere (z < 0)
     back_mask = points[:, 2] < 0
     back_points = points[back_mask]
     ax2.plot(circle_x, circle_y, "k-", alpha=0.2)
     ax2.scatter(back_points[:, 0], back_points[:, 1], c="blue", alpha=0.6, label=f"Back points ({np.sum(back_mask)})")
     ax2.set_title("Back Hemisphere (z < 0)")
 
-    # Configure both axes
     for ax in [ax1, ax2]:
         ax.set_aspect("equal")
         ax.grid(True, alpha=0.3)
@@ -83,8 +74,6 @@ def angle_between_rotations(R1: th.Tensor, R2: th.Tensor) -> float:
 
 def analyze_rotation_distribution(rotation_matrices: th.Tensor) -> dict:
     N = len(rotation_matrices)
-
-    # Compute pairwise angles between rotations
     angles = []
     for i in range(N):
         for j in range(i + 1, N):
@@ -103,7 +92,7 @@ def analyze_rotation_distribution(rotation_matrices: th.Tensor) -> dict:
 
 
 def optimize_rotation_distribution(points: th.Tensor, num_steps: int = 1000, lr: float = 0.001) -> th.Tensor:
-    def objective_func(points: th.Tensor, eps=1e-6) -> th.Tensor:
+    def objective_func(points: th.Tensor) -> th.Tensor:
         dists = th.norm(points[:, None] - points[None], dim=-1)  # (N, N)
         mask = th.eye(len(points), device=points.device) == 1
         dists = dists[~mask]
@@ -114,7 +103,6 @@ def optimize_rotation_distribution(points: th.Tensor, num_steps: int = 1000, lr:
     points = points.clone().detach().requires_grad_(True)
     optimizer = th.optim.Adam([points], lr=lr)
 
-    # Optimization loop
     for step in range(num_steps):
         optimizer.zero_grad()
         norm_points = points / th.norm(points, dim=1, keepdim=True)
@@ -130,35 +118,26 @@ def optimize_rotation_distribution(points: th.Tensor, num_steps: int = 1000, lr:
 
 
 def vector_to_rot_matrix(target_vec: np.ndarray) -> np.ndarray:
-    # Normalize target vector
     target = np.asarray(target_vec, dtype=np.float64)
     target = target / np.linalg.norm(target)
 
-    # Our reference vector is [0,0,1]
     ref = np.array([0, 0, 1])
 
-    # Get rotation axis (cross product)
     axis = np.cross(ref, target)
 
-    # If vectors are parallel (or anti-parallel), axis will be zero
     axis_norm = np.linalg.norm(axis)
     if axis_norm < 1e-10:
         if np.dot(ref, target) > 0:
-            return np.eye(3)  # vectors are same direction
+            return np.eye(3)
         else:
-            # vectors are opposite, rotate 180° around any perpendicular axis
             return np.array([[-1, 0, 0], [0, -1, 0], [0, 0, 1]])
 
-    # Normalize rotation axis
     axis = axis / axis_norm
 
-    # Get rotation angle
     cos_angle = np.dot(ref, target)
     angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))
 
-    # Use the Rodrigues formula to create rotation matrix
     K = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
-
     R = np.eye(3) + np.sin(angle) * K + (1 - cos_angle) * (K @ K)
     return R
 
