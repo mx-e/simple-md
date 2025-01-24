@@ -56,9 +56,9 @@ def get_thermostat(
                 atoms, tchain=nh_chain_len, tloop=1, temperature_K=temperature, timestep=timestep * units.fs, tdamp=tau
             )
         case "langevin":
-            return Langevin(atoms, temperature_K=temperature, timestep=timestep * units.fs, gamma=1.0 / tau)
+            return Langevin(atoms, temperature_K=temperature, timestep=timestep * units.fs, friction=1.0 / tau)
         case "bussi":
-            return Bussi(atoms, temperature_K=temperature, timestep=timestep * units.fs, tau=tau)
+            return Bussi(atoms, temperature_K=temperature, timestep=timestep * units.fs, taut=tau)
         case _:
             raise ValueError(f"Unknown thermostat: {thermostat}")
 
@@ -221,7 +221,7 @@ def run_md_simulation(
     #     )
     #     atoms.set_pbc(False)
 
-    dyn = get_thermostat(thermostat, atoms,  temperature, timestep, tau)
+    dyn = get_thermostat(thermostat, atoms, temperature, timestep, tau)
 
     # Set up trajectory file and energy tracker
     traj = trajectory.Trajectory(trajectory_file, "w", atoms)
@@ -252,9 +252,9 @@ def run_md_simulation(
     dyn.attach(energy_tracker, interval=1)
 
     # Run dynamics with improved monitoring
-    logger.info(f"Starting MD simulation with {thermostat.__class__.__name__} thermostat for {steps} steps...")
+    logger.info(f"Starting MD simulation with {thermostat} thermostat for {steps} steps...")
     logger.info(f"Target temperature: {temperature}K")
-    logger.info(f"Thermostat params: {thermostat}")
+    logger.info(f"Thermostat tau: {tau}")
 
     for i in range(steps):
         dyn.run(1)
