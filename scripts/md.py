@@ -74,15 +74,7 @@ def main(
     temperature: float = 300,
     tau: float = 100.0,
     init_struct_dir: Path = "data_md",
-    init_struct: Literal[
-        "15_ala",
-        "buckyball_catcher",
-        "c60",
-        "dichlormethan",
-        "ethanol",
-        "hydrogen",
-        "silver_trimer",
-    ] = "ethanol",
+    init_struct: str = "c12h4",
     last_n_steps: int
     | None = None,  # export the last n steps of the trajectory separately and use those for the dipole spectrum
     model_run_dir: Path = MISSING,
@@ -124,6 +116,9 @@ def main(
     # prepare results directory, load initial structure
     results_dir = Path(job_dir) / "md_results"
     results_dir.mkdir(exist_ok=True)
+    valid_init_struct_names = [f.stem for f in Path(init_struct_dir).glob("*.xyz")]
+    if init_struct not in valid_init_struct_names:
+        raise ValueError(f"Invalid initial structure name: {init_struct}. Available: {valid_init_struct_names}")
     init_struct_path = Path(init_struct_dir) / (init_struct + ".xyz")
     atoms = read(init_struct_path)
 
