@@ -190,8 +190,6 @@ class PairEmbedding(nn.Module):
 
         # node features
         self.nuclear_embedding = NuclearEmbedding(embd_dim)
-        self.multiplicity_embed = None
-        self.charge_embed = None
         self.multiplicity_embed = nn.Embedding(NODE_FEATURES_OFFSET, embd_dim)
         self.charge_embed = nn.Embedding(NODE_FEATURES_OFFSET, embd_dim)
         nn.init.normal_(self.multiplicity_embed.weight, mean=0.0, std=0.02)

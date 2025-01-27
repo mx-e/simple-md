@@ -11,22 +11,35 @@ from ase import units
 from ase.calculators.calculator import Calculator, all_changes
 from ase.io import read, trajectory, write
 from ase.md.andersen import Andersen
+from ase.md.bussi import Bussi  # Added Bussi thermostat
 from ase.md.langevin import Langevin  # Added Langevin thermostat
+from ase.md.nose_hoover_chain import NoseHooverChainNVT  # Added Nose-Hoover thermostat
 from ase.md.npt import NPT  # Added NPT with Nosé-Hoover
 from ase.md.nvtberendsen import NVTBerendsen  # Added Berendsen thermostat
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from conf.base_conf import BaseConfig, configure_main
-from hydra_zen import instantiate, load_from_yaml
+from hydra_zen import builds, instantiate, load_from_yaml, store
 from lib.data.loaders import batch_tall, collate_fn
 from lib.data.transforms import center_positions_on_center_of_mass, center_positions_on_centroid, get_random_rotations
 from lib.types import Property as Props
 from lib.utils.checkpoint import load_checkpoint
 from lib.utils.dist import get_amp, setup_device
+from lib.utils.filters import remove_net_force, remove_net_torque
 from lib.utils.helpers import get_hydra_output_dir
+from lib.utils.augmentation_utils import (
+    generate_equidistant_rotations,
+    visualize_rotations,
+    analyze_rotation_distribution,
+)
 from lib.utils.run import run
 from loguru import logger
 from matplotlib import pyplot as plt
 from omegaconf import MISSING
+
+import wandb
+
+pbuilds = partial(builds, zen_partial=True)
+
 
 BOHR_TO_ANG = 0.529177249  # Bohr to Angstrom
 HARTREE_TO_EV = 27.211386245988  # Hartree to eV
@@ -34,34 +47,49 @@ ANG_TO_BOHR = 1.0 / 0.529177249
 FORCE_CONVERSION = HARTREE_TO_EV / BOHR_TO_ANG
 
 
+def get_thermostat(
+    thermostat: Literal["nose_hoover", "langevin", "bussi"],
+    atoms,
+    temperature: float,
+    timestep: float,
+    tau: float,
+    nh_chain_len: int = 3,
+) -> NoseHooverChainNVT | Langevin | Bussi:
+    match thermostat:
+        case "nose_hoover":
+            return NoseHooverChainNVT(
+                atoms, tchain=nh_chain_len, tloop=1, temperature_K=temperature, timestep=timestep * units.fs, tdamp=tau
+            )
+        case "langevin":
+            return Langevin(atoms, temperature_K=temperature, timestep=timestep * units.fs, friction=1.0 / tau)
+        case "bussi":
+            return Bussi(atoms, temperature_K=temperature, timestep=timestep * units.fs, taut=tau)
+        case _:
+            raise ValueError(f"Unknown thermostat: {thermostat}")
+
+
 @configure_main(extra_defaults=[])
 def main(
     cfg: BaseConfig,
-    temperature: float = 300,
     timestep: float = 0.5,
-    n_data_aug: int = 64,
+    n_data_aug: int = 16,
     step_wise_random: bool = False,
-    n_steps: int = 40000,
-    thermostat_type: Literal["nose_hoover", "berendsen", "andersen", "langevin"] = "langevin",
-    thermostat_taut: float = 999999999999,
+    n_steps: int = 10000,
+    thermostat: Literal["nose_hoover", "langevin", "bussi"] = "nose_hoover",
+    temperature: float = 300,
+    tau: float = 100.0,
     init_struct_dir: Path = "data_md",
-    init_struct: Literal[
-        "15_ala",
-        "buckyball_catcher",
-        "c60",
-        "dichlormethan",
-        "ethanol",
-        "hydrogen",
-        "silver_trimer",
-    ] = "ethanol",
+    init_struct: str = "c12h4",
     last_n_steps: int
-    | None = 10000,  # export the last n steps of the trajectory separately and use those for the dipole spectrum
+    | None = None,  # export the last n steps of the trajectory separately and use those for the dipole spectrum
     model_run_dir: Path = MISSING,
     checkpoint_name: str = "best_model",
     dipole_model_run_dir: Path | None = None,
     dipole_checkpoint_name: str = "best_model",
     traj_log_interval: int = 10,
     ptdtype: Literal["float32", "bfloat16", "float16"] = "float32",
+    remove_net_force: bool = True,
+    remove_net_torque: bool = True,
 ) -> None:
     logger.info(f"Running with base config: {cfg}")
     mp.set_start_method("spawn", force=True)
@@ -69,7 +97,12 @@ def main(
     device, ctx = setup_device(), get_amp(ptdtype)
     model_run_conf_path = model_run_dir / ".hydra" / "config.yaml"
     model_run_conf = load_from_yaml(model_run_conf_path)
-    model_conf = model_run_conf["train"]["model"]
+    if "ft" in model_run_conf:
+        logger.info("detected fine-tuned model, loading pretrain model configuration")
+        model_pt_conf_path = model_run_dir / ".hydra" / "model_pretrain_conf.yaml"
+        model_conf = load_from_yaml(model_pt_conf_path)
+    elif "train" in model_run_conf:
+        model_conf = model_run_conf["train"]["model"]
     model = instantiate(model_conf)
     checkpoint_path = Path(model_run_dir) / "ckpts" / (checkpoint_name + ".pth")
     load_checkpoint(model, checkpoint_path)
@@ -88,18 +121,11 @@ def main(
     # prepare results directory, load initial structure
     results_dir = Path(job_dir) / "md_results"
     results_dir.mkdir(exist_ok=True)
+    valid_init_struct_names = [f.stem for f in Path(init_struct_dir).glob("*.xyz")]
+    if init_struct not in valid_init_struct_names:
+        raise ValueError(f"Invalid initial structure name: {init_struct}. Available: {valid_init_struct_names}")
     init_struct_path = Path(init_struct_dir) / (init_struct + ".xyz")
     atoms = read(init_struct_path)
-
-    if thermostat_type.lower() == "nose_hoover":
-        atoms.set_cell(
-            [
-                [120.0, 0.0, 0.0],  # Gives ~25Å buffer on each side
-                [0.0, 120.0, 0.0],
-                [0.0, 0.0, 120.0],
-            ]
-        )
-        atoms.set_pbc(False)
 
     if n_data_aug > 1:
         logger.info(f"Generating {n_data_aug} equidistant rotations...")
@@ -111,6 +137,9 @@ def main(
         stats = analyze_rotation_distribution(rotations)
         logger.info(f"Rotation Distribution Statistics: {stats}")
 
+    eval_artifact = None
+    if cfg.wandb is not None:
+        eval_artifact = wandb.Artifact("md_eval", type="evaluation")
     # Run MD simulation
     traj_path = Path(job_dir) / "md_results" / "md_trajectory.traj"
     if last_n_steps is not None:
@@ -123,18 +152,23 @@ def main(
         device=device,
         temperature=temperature,
         timestep=timestep,
+        tau=tau,
         rotations=rotations.to(device) if n_data_aug > 1 else None,
         step_wise_random_aug=step_wise_random,
         steps=n_steps,
         trajectory_file=traj_path,
-        thermostat_type=thermostat_type,
-        taut=thermostat_taut,
+        thermostat=thermostat,
         save_last_n_steps=last_n_steps,
         traj_log_interval=traj_log_interval,
+        wandb_artifact=eval_artifact,
+        remove_net_force=remove_net_force,
+        remove_net_torque=remove_net_torque,
     )
     # Save and plot results
     energy_tracker.save_data(results_dir)
     energy_tracker.plot(results_dir / "md_analysis.png")
+    if eval_artifact is not None:
+        cfg.wandb.run.log_artifact(eval_artifact)
 
     # Print final statistics
     final_stats = energy_tracker.get_stats()
@@ -148,17 +182,20 @@ def run_md_simulation(
     model,
     ctx,
     device,
-    temperature=300,  # K
-    timestep=0.5,  # fs
-    rotations=None,
-    step_wise_random_aug=False,
-    steps=10000,
+    temperature,  # K
+    tau,
+    timestep,  # fs
+    rotations,
+    step_wise_random_aug,
+    steps,
+    thermostat,
+    remove_net_force,
+    remove_net_torque,
     trajectory_file="md_trajectory.traj",
-    thermostat_type="Nose-Hoover",  # Added thermostat selection
-    taut=100.0,  # Thermostat time constant in fs
     save_last_n_steps=None,
     dipole_model=None,
     traj_log_interval=10,
+    wandb_artifact=None,
 ) -> "MDEnergyTracker":
     # Set up calculator
     calculator = MLCalculator(
@@ -167,42 +204,15 @@ def run_md_simulation(
         ctx,
         rotations=rotations,
         step_wise_random_aug=step_wise_random_aug,
+        remove_net_force=remove_net_force,
+        remove_net_torque=remove_net_torque,
     )
     atoms.calc = calculator
 
     # Initialize velocities
     MaxwellBoltzmannDistribution(atoms, temperature_K=temperature)
 
-    # Set up dynamics with selected thermostat
-    if thermostat_type.lower() == "nose_hoover":
-        # Nosé-Hoover thermostat (NPT ensemble)
-        # The time constant is converted to ASE units
-        taut_ase = taut * units.fs
-        dyn = NPT(
-            atoms,
-            timestep * units.fs,
-            temperature_K=temperature,
-            externalstress=0.0,
-            ttime=taut_ase,
-            pfactor=None,
-        )
-    elif thermostat_type.lower() == "berendsen":
-        # Berendsen thermostat (NVT ensemble)
-        dyn = NVTBerendsen(atoms, timestep * units.fs, temperature_K=temperature, taut=taut * units.fs)
-    elif thermostat_type.lower() == "andersen":
-        # Andersen thermostat
-        dyn = Andersen(atoms, timestep * units.fs, temperature_K=temperature, andersen_prob=0.01)
-    elif thermostat_type.lower() == "langevin":
-        # Langevin thermostat
-        # friction parameter is 1/taut
-        dyn = Langevin(
-            atoms,
-            timestep * units.fs,
-            temperature_K=temperature,
-            friction=1.0 / (taut),
-        )
-    else:
-        raise ValueError(f"Unknown thermostat type: {thermostat_type}")
+    dyn = get_thermostat(thermostat, atoms, temperature, timestep, tau)
 
     # Set up trajectory file and energy tracker
     traj = trajectory.Trajectory(trajectory_file, "w", atoms)
@@ -214,6 +224,7 @@ def run_md_simulation(
         dipole_model=dipole_model,
         last_n_steps=save_last_n_steps,
         traj_log_interval=traj_log_interval,
+        wandb_artifact=wandb_artifact,
     )
     xyz_trajectory = []
 
@@ -222,7 +233,7 @@ def run_md_simulation(
         frame.info["comment"] = (
             f"time={len(xyz_trajectory) * timestep:.1f}fs "
             f"temp={atoms.get_temperature():.1f}K "
-            f"thermostat={thermostat_type}"
+            f"thermostat={thermostat.__class__.__name__}"
         )
         xyz_trajectory.append(frame)
 
@@ -232,9 +243,9 @@ def run_md_simulation(
     dyn.attach(energy_tracker, interval=1)
 
     # Run dynamics with improved monitoring
-    logger.info(f"Starting MD simulation with {thermostat_type} thermostat for {steps} steps...")
+    logger.info(f"Starting MD simulation with {thermostat} thermostat for {steps} steps...")
     logger.info(f"Target temperature: {temperature}K")
-    logger.info(f"Thermostat time constant: {taut}fs")
+    logger.info(f"Thermostat tau: {tau}")
 
     for i in range(steps):
         dyn.run(1)
@@ -268,6 +279,9 @@ def run_md_simulation(
         frame.set_pbc(False)
     write(xyz_file, xyz_trajectory)
 
+    if wandb_artifact is not None:
+        wandb_artifact.add_file(xyz_file)
+
     if save_last_n_steps is not None and traj_log_interval == 1:
         last_n_traj = xyz_trajectory[-save_last_n_steps:]
         last_n_traj_file = str(Path(trajectory_file).with_name(f"last_{save_last_n_steps}_steps.xyz"))
@@ -284,7 +298,9 @@ class MLCalculator(Calculator):
     implemented_properties = ["forces"]
     not_implemented_properties = ["energy"]
 
-    def __init__(self, model, device, ctx, rotations=None, step_wise_random_aug=False) -> None:
+    def __init__(
+        self, model, device, ctx, remove_net_force, remove_net_torque, rotations=None, step_wise_random_aug=False
+    ) -> None:
         super().__init__()
         self.model = model
         self.device = device
@@ -306,17 +322,17 @@ class MLCalculator(Calculator):
         )
         self.rotations = rotations
         self.step_wise_random_aug = step_wise_random_aug
+        self.remove_net_force = remove_net_force
+        self.remove_net_torque = remove_net_torque
 
     def convert_atoms_to_model_input(self, atoms, rotations) -> tuple[dict, th.Tensor]:
         """Convert ASE Atoms object to model input format"""
         positions_bohr = atoms.positions * ANG_TO_BOHR
-        spin = atoms.get_initial_magnetic_moments().sum()
-        multiplicity = 2 * abs(spin) + 1
         data = {
             "positions": positions_bohr,
             "atomic_numbers": atoms.numbers,
-            "charge": atoms.get_initial_charges().sum(),
-            "multiplicity": multiplicity,
+            "charge": 0,
+            "multiplicity": 1,
         }
 
         data = self.collate_fn([data])
@@ -349,6 +365,15 @@ class MLCalculator(Calculator):
         with self.ctx:
             outputs = self.model(data)
 
+        n_nodes = (data[Props.atomic_numbers] != 0).sum(dim=1)  # (b,)
+        if self.remove_net_force:
+            outputs[Props.forces] = remove_net_force(forces=outputs[Props.forces], n_nodes=n_nodes)
+
+        if self.remove_net_torque:
+            outputs[Props.forces] = remove_net_torque(
+                positions=data[Props.positions], forces=outputs[Props.forces], n_nodes=n_nodes
+            )
+
         if self.rotations is not None:
             outputs[Props.forces] = th.bmm(outputs[Props.forces], reverse_rotations)
             mean_force_predictions = outputs[Props.forces].mean(dim=0)
@@ -366,7 +391,15 @@ class MDEnergyTracker:
     """Tracks energies and other observables during MD simulation"""
 
     def __init__(
-        self, atoms, timestep, target_temperature, device, dipole_model=None, last_n_steps=0, traj_log_interval=1
+        self,
+        atoms,
+        timestep,
+        target_temperature,
+        device,
+        dipole_model=None,
+        last_n_steps=0,
+        traj_log_interval=1,
+        wandb_artifact=None,
     ) -> None:
         self.atoms = atoms  # Store reference to atoms object
         self.timestep = timestep
@@ -376,6 +409,7 @@ class MDEnergyTracker:
         self.dipole_model = dipole_model
         self.last_n_steps = last_n_steps
         self.traj_log_interval = traj_log_interval
+        self.wandb_artifact = wandb_artifact
 
         # Initialize lists to store trajectory data
         self.times = []
@@ -590,6 +624,8 @@ class MDEnergyTracker:
         plt.tight_layout()
         plt.savefig(save_path)
         plt.close()
+        if self.wandb_artifact is not None:
+            self.wandb_artifact.add_file(save_path)
 
     def get_stats(self) -> dict:
         """Return summary statistics of the simulation"""
@@ -641,6 +677,8 @@ class MDEnergyTracker:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(data)
+        if self.wandb_artifact is not None:
+            self.wandb_artifact.add_file(csv_path)
         logger.info(f"Saved trajectory data to {csv_path}")
 
         # Save dipole moments as separate CSV if available
@@ -664,6 +702,8 @@ class MDEnergyTracker:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(dipole_data)
+            if self.wandb_artifact is not None:
+                self.wandb_artifact.add_file(dipole_path)
             logger.info(f"Saved dipole trajectory to {dipole_path}")
 
             # Compute and save IR spectrum
@@ -702,201 +742,11 @@ class MDEnergyTracker:
                 plot_path = results_dir / "ir_spectrum.png"
                 plt.savefig(plot_path, dpi=300, bbox_inches="tight")
                 plt.close()
+                if self.wandb_artifact is not None:
+                    self.wandb_artifact.add_file(plot_path)
                 logger.info(f"Saved IR spectrum plot to {plot_path}")
             else:
                 logger.warning("Could not compute IR spectrum - insufficient data points")
-
-
-def visualize_rotations(rotation_matrices: th.Tensor, save_path: str = "rotation_visualization.png") -> None:
-    # Convert to numpy for matplotlib
-    R = rotation_matrices.numpy()
-    N = len(R)
-
-    # Create standard basis vectors
-    e1 = np.array([1, 0, 0])
-    e2 = np.array([0, 1, 0])
-    e3 = np.array([0, 0, 1])
-
-    # Calculate rotated versions of each basis vector
-    rotated_e1 = np.array([R[i] @ e1 for i in range(N)])
-    rotated_e2 = np.array([R[i] @ e2 for i in range(N)])
-    rotated_e3 = np.array([R[i] @ e3 for i in range(N)])
-
-    # Create figure with subplots
-    fig = plt.figure(figsize=(20, 10))
-
-    # 3D plot
-    ax1 = fig.add_subplot(121, projection="3d")
-
-    # Plot rotated basis vectors
-    ax1.scatter(
-        rotated_e1[:, 0],
-        rotated_e1[:, 1],
-        rotated_e1[:, 2],
-        c="r",
-        label="x-axis",
-        alpha=0.6,
-    )
-    ax1.scatter(
-        rotated_e2[:, 0],
-        rotated_e2[:, 1],
-        rotated_e2[:, 2],
-        c="g",
-        label="y-axis",
-        alpha=0.6,
-    )
-    ax1.scatter(
-        rotated_e3[:, 0],
-        rotated_e3[:, 1],
-        rotated_e3[:, 2],
-        c="b",
-        label="z-axis",
-        alpha=0.6,
-    )
-
-    # Draw unit sphere wireframe
-    u = np.linspace(0, 2 * np.pi, 100)
-    v = np.linspace(0, np.pi, 100)
-    x = np.outer(np.cos(u), np.sin(v))
-    y = np.outer(np.sin(u), np.sin(v))
-    z = np.outer(np.ones(np.size(u)), np.cos(v))
-    ax1.plot_wireframe(x, y, z, color="gray", alpha=0.1)
-
-    # Set labels and title
-    ax1.set_xlabel("X")
-    ax1.set_ylabel("Y")
-    ax1.set_zlabel("Z")
-    ax1.set_title(f"Distribution of {N} Rotations\n(Rotated Basis Vectors)")
-    ax1.legend()
-
-    # Create 2D projections subplot
-    ax2 = fig.add_subplot(122)
-
-    # Plot XY projection
-    ax2.scatter(rotated_e1[:, 0], rotated_e1[:, 1], c="r", alpha=0.3, label="x-axis")
-    ax2.scatter(rotated_e2[:, 0], rotated_e2[:, 1], c="g", alpha=0.3, label="y-axis")
-    ax2.scatter(rotated_e3[:, 0], rotated_e3[:, 1], c="b", alpha=0.3, label="z-axis")
-
-    # Draw unit circle
-    circle = plt.Circle((0, 0), 1, fill=False, color="gray", linestyle="--", alpha=0.3)
-    ax2.add_artist(circle)
-
-    # Set labels and title
-    ax2.set_xlabel("X")
-    ax2.set_ylabel("Y")
-    ax2.set_title("XY Projection of Rotations")
-    ax2.set_aspect("equal")
-    ax2.grid(True, alpha=0.3)
-    ax2.legend()
-
-    # Adjust layout and save
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    plt.close()
-
-
-def analyze_rotation_distribution(rotation_matrices: th.Tensor) -> dict:
-    N = len(rotation_matrices)
-
-    # Compute pairwise angles between rotations
-    angles = []
-    for i in range(N):
-        for j in range(i + 1, N):
-            # Compute relative rotation
-            R_rel = th.mm(rotation_matrices[i], rotation_matrices[j].t())
-
-            # Convert to angle (in degrees)
-            theta = th.acos(th.clamp((th.trace(R_rel) - 1) / 2, -1.0, 1.0)) * 180 / np.pi
-            angles.append(theta.item())
-
-    angles = np.array(angles)
-    stats = {
-        "min_angle": np.min(angles),
-        "max_angle": np.max(angles),
-        "mean_angle": np.mean(angles),
-        "std_angle": np.std(angles),
-    }
-    return stats
-
-
-# TODO: Check how this function works, sth is weird
-def generate_equidistant_rotations(N, device="cpu") -> th.Tensor:
-    # Generate points on a Fibonacci sphere
-    phi = (1 + np.sqrt(5)) / 2  # golden ratio
-    indices = th.arange(N, dtype=th.float32, device=device)
-
-    # Calculate spherical coordinates
-    theta = 2 * np.pi * indices / phi
-    z = 1 - (2 * indices + 1) / N
-    radius = th.sqrt(1 - z * z)
-
-    # Convert to Cartesian coordinates
-    x = radius * th.cos(theta)
-    y = radius * th.sin(theta)
-    z = z
-
-    # Stack into points
-    points = th.stack([x, y, z], dim=1)
-    points = points / th.norm(points, dim=1, keepdim=True)
-
-    # Convert points to rotation matrices using quaternions
-    def points_to_quaternions(points) -> th.Tensor:
-        """Convert points on unit sphere to quaternions."""
-        # Use the method described in "Uniform Random Rotations" by Ken Shoemake
-        u = th.rand(N, dtype=th.float32, device=device)
-        v = th.rand(N, dtype=th.float32, device=device)
-        w = th.rand(N, dtype=th.float32, device=device)
-
-        # Convert uniform random numbers to quaternion
-        q1 = th.sqrt(1 - u) * th.sin(2 * np.pi * v)
-        q2 = th.sqrt(1 - u) * th.cos(2 * np.pi * v)
-        q3 = th.sqrt(u) * th.sin(2 * np.pi * w)
-        q4 = th.sqrt(u) * th.cos(2 * np.pi * w)
-
-        return th.stack([q1, q2, q3, q4], dim=1)
-
-    def quaternion_to_rotation_matrix(quaternion) -> th.Tensor:
-        """Convert quaternions to rotation matrices."""
-        q0, q1, q2, q3 = (
-            quaternion[:, 0],
-            quaternion[:, 1],
-            quaternion[:, 2],
-            quaternion[:, 3],
-        )
-
-        # First row
-        r00 = 1 - 2 * (q2 * q2 + q3 * q3)
-        r01 = 2 * (q1 * q2 - q0 * q3)
-        r02 = 2 * (q1 * q3 + q0 * q2)
-
-        # Second row
-        r10 = 2 * (q1 * q2 + q0 * q3)
-        r11 = 1 - 2 * (q1 * q1 + q3 * q3)
-        r12 = 2 * (q2 * q3 - q0 * q1)
-
-        # Third row
-        r20 = 2 * (q1 * q3 - q0 * q2)
-        r21 = 2 * (q2 * q3 + q0 * q1)
-        r22 = 1 - 2 * (q1 * q1 + q2 * q2)
-
-        return th.stack(
-            [
-                th.stack([r00, r01, r02], dim=1),
-                th.stack([r10, r11, r12], dim=1),
-                th.stack([r20, r21, r22], dim=1),
-            ],
-            dim=1,
-        )
-
-    # Generate quaternions and convert to rotation matrices
-    quaternions = points_to_quaternions(points)
-    rotation_matrices = quaternion_to_rotation_matrix(quaternions)
-
-    # Ensure proper orthogonality (due to numerical precision)
-    U, _, V = th.svd(rotation_matrices)
-    rotation_matrices = th.bmm(U, V.transpose(1, 2))
-
-    return rotation_matrices
 
 
 if __name__ == "__main__":

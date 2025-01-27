@@ -32,11 +32,11 @@ python-dotenv = "^1.0.1"
 submitit = "^1.5.2"
 frozendict = "^2.4.6"
 tensorflow-datasets = "^4.9.7"
-ase = "^3.23.0"
 scikit-learn = "^1.5.2"
 load-atoms = "^0.3.9"
 tensorflow = "^2.18.0"
 torch-tensorrt = "^2.5.0"
+ase = "3.24"
 
 [tool.poetry.group.datasets.dependencies]
 sgdml = "^1.0.2"

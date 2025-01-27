@@ -1,6 +1,6 @@
 #! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data --bind /home/bbdc2/quantum/max/:/data container.sif python
-from functools import partial
 import json
+from functools import partial
 from pathlib import Path
 from typing import Literal
 
@@ -10,16 +10,16 @@ import torch as th
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from conf.base_conf import BaseConfig, configure_main
-from hydra_zen import builds, instantiate, load_from_yaml, store
+from hydra_zen import builds, instantiate, load_from_yaml, store, to_yaml
 from hydra_zen.typing import Partial
 from lib.data.loaders import get_loaders
 from lib.datasets import (
+    get_ko2020_dataset,
     get_md17_22_dataset,
     get_qcml_dataset,
     get_qm7x_dataset,
     get_qm7x_pbe0_dataset,
     get_rmd17_dataset,
-    get_ko2020_dataset,
 )
 from lib.ema import EMAModel
 from lib.loss import LossModule
@@ -349,7 +349,7 @@ def finetune(
     finetune_type: Literal["head_only", "full"] = "full",
     train_size: Literal["zero_shot", "few_shot", "full"] = "few_shot",
     few_shot_size: int = 9500,
-    batch_size: int = 500,
+    batch_size: int = 250,
     total_steps: int = 1000,
     final_val_samples: int = 500,
     final_test_samples: int = 10000,
@@ -369,6 +369,10 @@ def finetune(
         conf = load_from_yaml(config_path)
         model_conf = conf["train"]["model"]
         model = instantiate(model_conf)
+        # save model conf to finetune config
+        model_conf_path = cfg.runtime.out_dir / ".hydra" / "model_pretrain_conf.yaml"
+        model_conf_path.write_text(to_yaml(model_conf))
+
         if loss is None:
             loss = instantiate(conf["train"]["loss"])
         model = Predictor(model, loss).to(device)
