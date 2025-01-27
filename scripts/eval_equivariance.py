@@ -133,41 +133,26 @@ def evaluate_equivariance(output_dir: Path, model, loaders, n_test_samples) -> N
 def compute_equivariance(
     model,
     loader,
-    rotations_model: th.Tensor,  # (n_rotations, 3, 3)
+    fa_rotation_matrices: th.Tensor,  # (n_rotations, 3, 3)
     n_rotations_eval: int = 512,
     n_samples: int = 256,
 ) -> None:
-    n_model_rots, _, _ = rotations_model.shape
+    n_model_rots, _, _ = fa_rotation_matrices.shape
 
     stds = []
 
     for batch in islice(loader, n_samples):
         augmented_batch = augment_positions(
             batch, augmentation_mult=n_rotations_eval, random_rotation=True, random_reflection=False
+        )  # adds n_rotations_eval rotations to each batch so (1, n, 3) -> (n_rotations_eval, n, 3)
+        std = get_batch_equivariance_std(
+            batch=augmented_batch,
+            model=model,
+            n_frame_averaging=n_model_rots,
+            fa_rotation_matrices=fa_rotation_matrices,
+            n_rotations_eval=n_rotations_eval,
         )
-        augmented_batch_model, reverse_rotations = apply_rotation_matrices_to_batch(
-            augmented_batch, rotations_model
-        )  # _ , (b * n_rotations, 3, 3)
-        SUB_BATCH_SIZE = 1024
-        total_bs = n_model_rots * n_rotations_eval
-        sub_rot_eval = (
-            n_rotations_eval if total_bs < SUB_BATCH_SIZE else n_rotations_eval / (total_bs / SUB_BATCH_SIZE)
-        )
-        assert sub_rot_eval.is_integer(), f"model rotations * eval rotations must be divisible by {SUB_BATCH_SIZE}"
-        assert SUB_BATCH_SIZE % n_model_rots == 0, f"model rotations must divide {SUB_BATCH_SIZE}"
-        assert n_model_rots < SUB_BATCH_SIZE, f"model rotations must be less than {SUB_BATCH_SIZE}"
-
-        losses_mol = []
-        # to little memory to evaluate all rotations at once
-        for i in range(0, total_bs, SUB_BATCH_SIZE):
-            sub_batch = {k: v[i : i + SUB_BATCH_SIZE] for k, v in augmented_batch_model.items()}
-            sub_batch_reverse_rots = reverse_rotations[i : i + SUB_BATCH_SIZE]
-            loss = get_batch_equivariance_losses(
-                sub_batch, model, n_model_rots, sub_batch_reverse_rots, int(sub_rot_eval)
-            )
-            losses_mol.append(loss)
-        stds_mol = th.cat(losses_mol, dim=0).std().item()
-        stds.append(stds_mol)
+        stds.append(std)
 
     stds = th.tensor(stds)
     mean_std_deviation = stds.mean().item()
@@ -175,6 +160,57 @@ def compute_equivariance(
         f"Mean standard deviation of equivariance with averaging over {n_model_rots} rotations: {mean_std_deviation}"
     )
     return mean_std_deviation
+
+
+def get_batch_equivariance_std(
+    batch,
+    model,
+    n_frame_averaging: int,
+    fa_rotation_matrices: th.Tensor,
+    n_rotations_eval: int = 512,
+) -> None:
+    assert th.all(batch[Props.mask] == 1), "This eval does not support ragged batches"
+    MAX_BATCH_SIZE = 1024  # we want to be as fast as possible but not run out of memory
+    total_bs = n_frame_averaging * n_rotations_eval
+    sub_batch_size = n_rotations_eval if total_bs < MAX_BATCH_SIZE else n_rotations_eval / (total_bs / MAX_BATCH_SIZE)
+    assert sub_batch_size.is_integer(), (
+        f"frame averaging rotations * eval rotations must be divisible by {MAX_BATCH_SIZE}"
+    )
+    sub_batch_size = int(sub_batch_size)
+    assert MAX_BATCH_SIZE % n_frame_averaging == 0, f"frame averaging rotations must divide {MAX_BATCH_SIZE}"
+    assert n_frame_averaging < MAX_BATCH_SIZE, f"frame averaging rotations must be less than {MAX_BATCH_SIZE}"
+
+    losses_mol = []
+    # to little memory to evaluate all rotations at once for large frame_averaging sizes
+    for i in range(0, n_rotations_eval, sub_batch_size):
+        sub_batch = {k: v[i : i + sub_batch_size] for k, v in batch.items()}
+        forces_pred = forward_with_frame_averaging(
+            sub_batch, model, n_frame_averaging, fa_rotation_matrices
+        )  # (sub_batch_size, n_atoms, 3)
+        forces_true = sub_batch[Props.forces]  # (sub_batch_size, n_atoms, 3)
+        dist = (forces_true - forces_pred).norm(dim=-1)  # (sub_batch_size, n_atoms)
+        loss = dist.mean(dim=-1)  # (sub_batch_size,)
+        losses_mol.append(loss)
+
+    return th.cat(losses_mol).std().item()
+
+
+def forward_with_frame_averaging(
+    batch: dict,
+    model,
+    n_frame_averaging: int,
+    fa_rotation_matrices: th.Tensor,
+) -> th.Tensor:
+    batch_size = batch[Props.positions].shape[0]
+    # apply frame averaging rotations
+    batch_frame_avging, reverse_rotations = apply_rotation_matrices_to_batch(batch, fa_rotation_matrices)
+    out, _ = model(batch_frame_avging)
+    forces_pred = out[Props.forces]  # (batch_size * fa_size, n_atoms, 3)
+    forces_pred = th.bmm(forces_pred, reverse_rotations)  # (batch_size * fa_size, n_atoms, 3)
+    forces_pred = forces_pred.view(batch_size, n_frame_averaging, -1, 3)  # (batch_size, fa_size, n_atoms, 3)
+    # mean over frame averaging rotations
+    forces_pred = forces_pred.mean(dim=1)  # (batch_size, n, 3)
+    return forces_pred  # (batch_size, n, 3)
 
 
 def apply_rotation_matrices_to_batch(batch: dict, rotation_matrices: th.Tensor) -> dict:
@@ -192,6 +228,7 @@ def apply_rotation_matrices_to_batch(batch: dict, rotation_matrices: th.Tensor) 
 
     reverse_rotations = R.transpose(1, 2)  # (b * n_rotations, 3, 3)
 
+    batch = batch.copy()
     batch[Props.positions] = positions
     batch[Props.forces] = forces
     batch[Props.mask] = batch[Props.mask].repeat_interleave(n_rotations, dim=0)
@@ -199,35 +236,6 @@ def apply_rotation_matrices_to_batch(batch: dict, rotation_matrices: th.Tensor) 
     batch[Props.multiplicity] = batch[Props.multiplicity].repeat_interleave(n_rotations, dim=0)
     batch[Props.charge] = batch[Props.charge].repeat_interleave(n_rotations, dim=0)
     return batch, reverse_rotations
-
-
-def get_batch_equivariance_losses(
-    batch,
-    model,
-    n_model_rots: int,
-    reverse_rotations: th.Tensor,
-    n_rotations_eval: int = 512,
-) -> None:
-    out, _ = model(batch)
-    assert th.all(batch[Props.mask] == 1), "This eval does not support ragged batches"
-
-    forces_true, forces_pred = batch[Props.forces], out[Props.forces]  # (b, n, 3), (b, n, 3)
-
-    # reverse frame averaging rotations
-    forces_true = th.bmm(forces_true, reverse_rotations)  # (b * n_rotations, n, 3)
-    forces_pred = th.bmm(forces_pred, reverse_rotations)  # (b * n_rotations, n, 3)
-
-    # average over frame averaging rotations
-    forces_true = forces_true.view(n_rotations_eval, n_model_rots, -1, 3)  # (n_rotations_eval, n_model_rots, n, 3)
-    forces_pred = forces_pred.view(n_rotations_eval, n_model_rots, -1, 3)  # (n_rotations_eval, n_model_rots, n, 3)
-
-    forces_true = forces_true.mean(dim=1)  # (n_rotations_eval, n, 3)
-    forces_pred = forces_pred.mean(dim=1)  # (n_rotations_eval, n, 3)
-
-    # std of loss over evaluation rotations
-    dist = (forces_true - forces_pred).norm(dim=-1)  # (n_rotations_eval, n)
-    loss = dist.mean(dim=-1)  # (n_rotations_eval,)
-    return loss
 
 
 if __name__ == "__main__":
