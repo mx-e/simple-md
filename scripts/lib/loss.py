@@ -15,6 +15,7 @@ def atom_wise_euclidean(pred_forces, true_forces, reduction="mean") -> th.Tensor
         return diff
     return diff.mean()
 
+
 def atom_wise_cosine_similarity(pred_forces, true_forces, reduction="mean") -> th.Tensor:
     assert reduction in ["mean", "none"], f"Invalid reduction {reduction}"
     pred_forces = F.normalize(pred_forces, p=2, dim=-1)
@@ -23,6 +24,7 @@ def atom_wise_cosine_similarity(pred_forces, true_forces, reduction="mean") -> t
     if reduction == "none":
         return sim
     return sim.mean()
+
 
 class LossType(Enum):
     force_weighted = "force_weighted"
@@ -93,18 +95,21 @@ atomref_val_targets = {
 def unbatch(batched_tensor, mask) -> th.Tensor:
     mask = mask.unsqueeze(-1).expand_as(batched_tensor)  # (b, n, 3)
     unbatched_tensor = batched_tensor.masked_select(mask).view(-1, batched_tensor.shape[-1])  # (n', 3)
+
     return unbatched_tensor
 
 
 def mean_losses_elementwise(unbatched_losses, mask) -> th.Tensor:
     batch_size = mask.shape[0]  # (b, n)
     n_dims = len(unbatched_losses.shape)
+    assert n_dims in [1, 2], f"Expected 1 or 2 dimensions, got {n_dims}"
+    if n_dims == 2:
+        unbatched_losses = unbatched_losses.mean(dim=1)  # (n,)
     indices = th.repeat_interleave(
         th.arange(batch_size, device=unbatched_losses.device),
         mask.sum(dim=1),  # (b,)
     )  # (n',)
-    indices = indices.unsqueeze(-1) if n_dims == 2 else indices
-    per_mol_loss = th.zeros((batch_size, 1) if n_dims == 2 else batch_size, device=unbatched_losses.device)  # (b,)
+    per_mol_loss = th.zeros(batch_size, device=unbatched_losses.device)  # (b,)
     per_mol_loss.scatter_add_(dim=0, index=indices, src=unbatched_losses).squeeze()  # (b,)
     return per_mol_loss / mask.sum(dim=1)  # (b,)
 
@@ -130,9 +135,9 @@ class LossModule(nn.Module):
 
         self.losses_per_mol = losses_per_mol
         self.compute_metrics_train = compute_metrics_train
-        assert (
-            len(self.targets) == len(self.weights) == len(loss_types)
-        ), "For each target, a loss weight and a loss type must be configured"
+        assert len(self.targets) == len(self.weights) == len(loss_types), (
+            "For each target, a loss weight and a loss type must be configured"
+        )
 
         try:
             self.loss_funcs = {target: {lt: loss_funcs[target][lt]} for target, lt in self.loss_types.items()}

@@ -2,6 +2,7 @@ import torch as th
 import numpy as np
 from matplotlib import pyplot as plt
 from loguru import logger
+from scipy.spatial.transform import Rotation
 
 
 def generate_equidistant_rotations(N, device="cpu", optimize: bool = True) -> th.Tensor:
@@ -114,7 +115,7 @@ def optimize_rotation_distribution(points: th.Tensor, num_steps: int = 1000, lr:
     points = points / th.norm(points, dim=1, keepdim=True)
 
     logger.info(f"Final loss = {objective_func(points).item()}")
-    return points.detach().clone()
+    return points.detach().clone().float()
 
 
 def vector_to_rot_matrix(target_vec: np.ndarray) -> np.ndarray:
@@ -146,3 +147,25 @@ def rot_matrix_to_vector(R: np.ndarray) -> np.ndarray:
     ref_vector = np.array([0, 0, 1])
     target_vector = R @ ref_vector
     return target_vector
+
+
+def get_random_rotations(n_samples, device) -> th.Tensor:
+    R = Rotation.random(n_samples).as_matrix()
+    R = th.tensor(R, dtype=th.float32)
+    return R.to(device)
+
+
+def get_random_reflections(n_samples, device, reflection_share=0.5, eps=1e-9) -> th.Tensor:
+    # get random normal vectors
+    normals = th.randn(n_samples, 3).to(device)  # (n_samples, 3)
+    normals = normals / (th.norm(normals, dim=1, keepdim=True) + eps)  # (n_samples, 3)
+
+    # get householder matrix
+    normals = normals.unsqueeze(2)
+    outer = th.matmul(normals, normals.transpose(1, 2))  # (n_samples, 3, 3)
+    identity = th.eye(3, dtype=normals.dtype, device=normals.device).unsqueeze(0)  # (1, 3, 3)
+    householder = identity.repeat(n_samples, 1, 1)  # (n_samples, 3, 3)
+    # selectively reflect
+    sample_mask = th.rand(n_samples) < reflection_share
+    householder[sample_mask] -= 2 * outer[sample_mask]
+    return householder

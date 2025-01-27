@@ -7,6 +7,7 @@ from ase.data import atomic_masses
 from ase.neighborlist import neighbor_list
 from lib.types import Property as Props
 from lib.types import property_dtype
+from lib.utils.augmentation import get_random_reflections, get_random_rotations
 from loguru import logger
 
 
@@ -127,55 +128,6 @@ def augment_positions(
     batch[Props.positions] = positions
     batch[Props.forces] = forces
     return batch
-
-
-def get_random_rotations(n_samples, device) -> th.Tensor:
-    # Generate random points on the surface of a 4D hypersphere
-    u1, u2, u3 = th.rand(n_samples, 3).chunk(3, dim=1)  # (n_samples, 1)
-
-    # Convert to quaternion
-    a = th.sqrt(1 - u1) * th.sin(2 * th.pi * u2)
-    b = th.sqrt(1 - u1) * th.cos(2 * th.pi * u2)
-    c = th.sqrt(u1) * th.sin(2 * th.pi * u3)
-    d = th.sqrt(u1) * th.cos(2 * th.pi * u3)
-
-    # Convert quaternion to rotation matrix
-    aa, bb, cc, dd = a * a, b * b, c * c, d * d
-    ab, ac, ad = a * b, a * c, a * d
-    bc, bd, cd = b * c, b * d, c * d
-
-    R = th.stack(
-        [
-            aa + bb - cc - dd,
-            2 * (bc - ad),
-            2 * (bd + ac),
-            2 * (bc + ad),
-            aa - bb + cc - dd,
-            2 * (cd - ab),
-            2 * (bd - ac),
-            2 * (cd + ab),
-            aa - bb - cc + dd,
-        ],
-        dim=-1,
-    ).reshape(n_samples, 3, 3)  # (n_samples, 3, 3)
-
-    return R.to(device)
-
-
-def get_random_reflections(n_samples, device, reflection_share=0.5, eps=1e-9) -> th.Tensor:
-    # get random normal vectors
-    normals = th.randn(n_samples, 3).to(device)  # (n_samples, 3)
-    normals = normals / (th.norm(normals, dim=1, keepdim=True) + eps)  # (n_samples, 3)
-
-    # get householder matrix
-    normals = normals.unsqueeze(2)
-    outer = th.matmul(normals, normals.transpose(1, 2))  # (n_samples, 3, 3)
-    identity = th.eye(3, dtype=normals.dtype, device=normals.device).unsqueeze(0)  # (1, 3, 3)
-    householder = identity.repeat(n_samples, 1, 1)  # (n_samples, 3, 3)
-    # selectively reflect
-    sample_mask = th.rand(n_samples) < reflection_share
-    householder[sample_mask] -= 2 * outer[sample_mask]
-    return householder
 
 
 pre_collate_transforms = {
