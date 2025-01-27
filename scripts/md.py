@@ -26,17 +26,17 @@ from lib.utils.checkpoint import load_checkpoint
 from lib.utils.dist import get_amp, setup_device
 from lib.utils.filters import remove_net_force, remove_net_torque
 from lib.utils.helpers import get_hydra_output_dir
-from lib.utils.augmentation_utils import (
-    generate_equidistant_rotations,
-    visualize_rotations,
-    analyze_rotation_distribution,
-)
 from lib.utils.run import run
 from loguru import logger
 from matplotlib import pyplot as plt
 from omegaconf import MISSING
 
 import wandb
+from scripts.lib.utils.augmentation import (
+    analyze_rotation_distribution,
+    generate_equidistant_rotations,
+    visualize_rotations,
+)
 
 pbuilds = partial(builds, zen_partial=True)
 
@@ -72,9 +72,9 @@ def get_thermostat(
 def main(
     cfg: BaseConfig,
     timestep: float = 0.5,
-    n_data_aug: int = 16,
+    n_data_aug: int = 8,
     step_wise_random: bool = False,
-    n_steps: int = 10000,
+    n_steps: int = 5000,
     thermostat: Literal["nose_hoover", "langevin", "bussi"] = "nose_hoover",
     temperature: float = 300,
     tau: float = 100.0,
@@ -90,6 +90,7 @@ def main(
     ptdtype: Literal["float32", "bfloat16", "float16"] = "float32",
     remove_net_force: bool = True,
     remove_net_torque: bool = True,
+    fa_outlier_log_threshold: float = 1e-3,
 ) -> None:
     logger.info(f"Running with base config: {cfg}")
     mp.set_start_method("spawn", force=True)
@@ -126,6 +127,9 @@ def main(
         raise ValueError(f"Invalid initial structure name: {init_struct}. Available: {valid_init_struct_names}")
     init_struct_path = Path(init_struct_dir) / (init_struct + ".xyz")
     atoms = read(init_struct_path)
+    fa_outliers_log_path = results_dir / "frame_averaging_outliers.log"
+    fa_outliers_log_path.parent.mkdir(exist_ok=True)
+    fa_outliers_log_path.touch()
 
     if n_data_aug > 1:
         logger.info(f"Generating {n_data_aug} equidistant rotations...")
@@ -163,6 +167,8 @@ def main(
         wandb_artifact=eval_artifact,
         remove_net_force=remove_net_force,
         remove_net_torque=remove_net_torque,
+        fa_outlier_log_threshold=fa_outlier_log_threshold,
+        fa_outliers_log_path=fa_outliers_log_path,
     )
     # Save and plot results
     energy_tracker.save_data(results_dir)
@@ -196,6 +202,8 @@ def run_md_simulation(
     dipole_model=None,
     traj_log_interval=10,
     wandb_artifact=None,
+    fa_outlier_log_threshold=1e-3,
+    fa_outliers_log_path=None,
 ) -> "MDEnergyTracker":
     # Set up calculator
     calculator = MLCalculator(
@@ -206,6 +214,8 @@ def run_md_simulation(
         step_wise_random_aug=step_wise_random_aug,
         remove_net_force=remove_net_force,
         remove_net_torque=remove_net_torque,
+        fa_outlier_log_threshold=fa_outlier_log_threshold,
+        fa_outliers_log_path=fa_outliers_log_path,
     )
     atoms.calc = calculator
 
@@ -299,7 +309,16 @@ class MLCalculator(Calculator):
     not_implemented_properties = ["energy"]
 
     def __init__(
-        self, model, device, ctx, remove_net_force, remove_net_torque, rotations=None, step_wise_random_aug=False
+        self,
+        model,
+        device,
+        ctx,
+        remove_net_force,
+        remove_net_torque,
+        rotations=None,
+        step_wise_random_aug=False,
+        fa_outlier_log_threshold=1e-3,
+        fa_outliers_log_path=None,
     ) -> None:
         super().__init__()
         self.model = model
@@ -324,6 +343,8 @@ class MLCalculator(Calculator):
         self.step_wise_random_aug = step_wise_random_aug
         self.remove_net_force = remove_net_force
         self.remove_net_torque = remove_net_torque
+        self.fa_outlier_log_threshold = fa_outlier_log_threshold
+        self.fa_outliers_log_path = fa_outliers_log_path
 
     def convert_atoms_to_model_input(self, atoms, rotations) -> tuple[dict, th.Tensor]:
         """Convert ASE Atoms object to model input format"""
@@ -375,7 +396,12 @@ class MLCalculator(Calculator):
             )
 
         if self.rotations is not None:
-            outputs[Props.forces] = th.bmm(outputs[Props.forces], reverse_rotations)
+            outputs[Props.forces] = th.bmm(outputs[Props.forces], reverse_rotations)  # (n_rotations, n_atoms, 3)
+            check_rotations_for_outliers_and_log(
+                forces=outputs[Props.forces],
+                fa_outliers_log_path=self.fa_outliers_log_path,
+                outlier_log_threshold=self.fa_outlier_log_threshold,
+            )
             mean_force_predictions = outputs[Props.forces].mean(dim=0)
         else:
             mean_force_predictions = outputs[Props.forces].squeeze()
@@ -385,6 +411,29 @@ class MLCalculator(Calculator):
         self.results = {
             "forces": mean_force_predictions.squeeze().cpu().numpy(),
         }
+
+
+def check_rotations_for_outliers_and_log(
+    forces: th.Tensor,  # (n_rotations, n_atoms, 3)
+    fa_outliers_log_path: Path,
+    outlier_log_threshold: float,
+) -> None:
+    if fa_outliers_log_path is None:
+        return
+    mean_forces = forces.mean(dim=0, keepdim=True)  # (1, n_atoms, 3)
+    dists = (forces - mean_forces).norm(dim=-1)  # (n_rotations, n_atoms)
+    outliers = dists > outlier_log_threshold
+    if outliers.any():
+        logger.warning(f"Frame averaging outliers detected: {outliers.sum()} / {len(outliers.flatten())}")
+        max_outlier = th.max(dists)
+        logger.warning(f"Max outlier distance from mean prediction: {max_outlier:.2e}")
+        outliers = th.nonzero(outliers, as_tuple=True)
+        with fa_outliers_log_path.open("a") as f:
+            f.write("--- Outliers Detected ---\n")
+            f.write(f"DISTS: {dists}\n")
+            f.write(f"OUTLIERS: {outliers}\n")
+            f.write(f"MAX OUTLIER DIST: {max_outlier}\n")
+            f.write("\n")
 
 
 class MDEnergyTracker:

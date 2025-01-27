@@ -99,6 +99,7 @@ def augment_positions(
     augmentation_mult=1,
     random_rotation=False,
     random_reflection=False,
+    return_matrices=False,
 ) -> dict:
     if augmentation_mult <= 1:
         return batch
@@ -109,11 +110,13 @@ def augment_positions(
     forces = batch[Props.forces]  # (n_batches, n_atoms, 3)
 
     n_batches, _, _ = positions.size()
+    R = None
     if random_rotation:
         R = get_random_rotations(n_batches, positions.device)
         positions = th.bmm(positions, R)
         forces = th.bmm(forces, R)
 
+    H = None
     if random_reflection:
         H = get_random_reflections(n_batches, positions.device, reflection_share=0.5)
         positions = th.bmm(positions, H)
@@ -127,6 +130,8 @@ def augment_positions(
 
     batch[Props.positions] = positions
     batch[Props.forces] = forces
+    if return_matrices:
+        return batch, R, H
     return batch
 
 
