@@ -372,6 +372,7 @@ def finetune(
         if loss is None:
             loss = instantiate(conf["train"]["loss"])
         model = Predictor(model, loss).to(device)
+
         ddp_args = {
             "device_ids": ([rank] if cfg.runtime.device == "cuda" else None),
         }
