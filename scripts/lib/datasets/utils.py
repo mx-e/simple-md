@@ -1,3 +1,5 @@
+import gzip
+import json
 import numpy as np
 from loguru import logger
 from sklearn.model_selection import GroupShuffleSplit
@@ -6,36 +8,47 @@ from frozendict import frozendict
 
 molecule_name_formula = frozendict(
     {
-        "aspirin": "C9H8O4",
-        "azobenzene": "C12H10N2",
-        "benzene": "C6H6",
-        "ethanol": "C2H6O",
-        "malonaldehyde": "C3H2O4",
-        "naphthalene": "C10H8",
-        "paracetamol": "C8H9NO2",
-        "salicylic_acid": "C7H6O3",
-        "toluene": "C7H8",
-        "uracil": "C4H4N2O2",
+        "aspirin": "CC(=O)OC1=CC=CC=C1C(=O)O",
+        "azobenzene": "C1=CC=C(C=C1)N=NC2=CC=CC=C2 ",
+        "benzene": "C1=CC=CC=C1 ",
+        "ethanol": "CCO",
+        "malonaldehyde": "C(C=O)C=O ",
+        "naphthalene": "C1=CC=C2C=CC=CC2=C1 ",
+        "paracetamol": "CC(=O)NC1=CC=C(C=C1)O ",
+        "salicylic_acid": "C1=CC=C(C(=C1)C(=O)O)O ",
+        "toluene": "CC1=CC=CC=C1 ",
+        "uracil": "C1=CNC(=O)NC1=O ",
+        "NaCl": "[Na+].[Cl-]",
+        "Carbon_chain": "none",
+        "AuMgO": "none",
+        "ag_cluster": "none",
+        "Ac-Ala3-NHMe": "none",
+        "DHA": "C1[C@H]([C@H]([C@H](OC1(C(=O)O)O)C(=O)O)O)O",
+        "stachyose": "C([C@@H]1[C@@H]([C@@H]([C@H]([C@H](O1)OC[C@@H]2[C@@H]([C@@H]([C@H]([C@H](O2)OC[C@@H]3[C@H]([C@@H]([C@H]([C@H](O3)O[C@]4([C@H]([C@@H]([C@H](O4)CO)O)O)CO)O)O)O)O)O)O)O)O)O)O",
+        "AT-AT": "none",
+        "AT-AT-CG-CG": "none",
+        "buckyball-catcher": "none",
+        "double-walled_nanotube": "none",
     }
 )
 
-def get_split_by_molecule_name(molecule_name: str, splits: dict, seed: int) -> str:
+def get_split_by_molecule_name(molecule_name: str) -> str:
     if molecule_name not in molecule_name_formula:
         logger.warning(f"Unknown chemical formula for '{molecule_name}'.")
         return "unknown"
     
-    # get split with non_overlapping_train_test_val_split_hash_based
-    molecule_names = np.array([molecule_name_formula[molecule_name]])
-    train_idx, test_idx, val_idx = non_overlapping_train_test_val_split_hash_based(splits, molecule_names, seed=42, prevent_warnings=True)
+    # load split from gzipped file
+    with gzip.open('data_smiles/smiles.json.gz', 'rb') as f:
+        splits = json.load(f)
 
-    if len(train_idx) > 0:
-        return "train"
-    elif len(test_idx) > 0:
-        return "test"
-    elif len(val_idx) > 0:
-        return "val"
-    else:
-        return "unknown"
+    #remove all slashes from the molecule names in the splits
+    for key in splits.keys():
+        splits[key] = [x.replace('/','').replace('\\','') for x in splits[key]]
+    
+    for key in splits.keys():
+        if molecule_name_formula[molecule_name] in splits[key]:
+            return key
+    return "unknown"
 
 def non_overlapping_train_test_val_split(
     splits: dict[str, float], groups: np.array, seed: int = 42

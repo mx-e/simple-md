@@ -24,6 +24,14 @@ def atom_wise_cosine_similarity(pred_forces, true_forces, reduction="mean") -> t
         return sim
     return sim.mean()
 
+def atom_wise_norm_difference(pred_forces, true_forces, reduction="none") -> th.Tensor:
+    assert reduction in ["mean", "none"], f"Invalid reduction {reduction}"
+    diff = pred_forces.norm(dim=-1) - true_forces.norm(dim=-1)  # (n, 3)
+    if reduction == "none":
+        pass
+    return diff
+    return diff.mean()
+
 class LossType(Enum):
     force_weighted = "force_weighted"
     mae = "mae"
@@ -33,6 +41,8 @@ class LossType(Enum):
     rve = "rve"
     rmse = "rmse"
     cosine = "cosine"
+    norm_diff = "norm_diff"
+    norm_var = "norm_var"
 
     def __str__(self) -> str:
         return self.value
@@ -60,6 +70,8 @@ force_loss_funcs = {
     LossType.mse: F.mse_loss,
     LossType.huber: F.smooth_l1_loss,
     LossType.cosine: atom_wise_cosine_similarity,
+    LossType.norm_diff: atom_wise_norm_difference,
+    LossType.norm_var: lambda pred, true, reduction: atom_wise_norm_difference(pred, true, "none").var(),
 }
 
 energy_loss_funcs = {

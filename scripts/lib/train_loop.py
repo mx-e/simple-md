@@ -87,7 +87,7 @@ def train_loop(
 
             # logging
             if real_step % log_interval == 0 and rank == 0:
-                loss_dict = {k: loss.item() for k, loss in losses.items()}
+                loss_dict = {k: loss.item() if loss.dim() == 0 else loss.cpu().detach().numpy() for k, loss in losses.items()}
                 loss_dict["lr"] = optimizer.param_groups[0]["lr"]
                 log_dict(loss_dict, real_step, log_wandb=wandb)
 
@@ -169,10 +169,10 @@ def evaluate(model, loader, ctx, ema, eval_samples) -> dict:
         f"Eval samples must be divisible by the batch size, but got {eval_samples} % {loader.batch_size}"
     )
     total_losses = eval_try_without_grad(model, loader, ctx, None, eval_samples)
-    losses = {f"{k}": v.item() / steps for k, v in total_losses.items()}
+    losses = {f"{k}": v.item() / steps if v.dim() == 0 else v.cpu().detach().numpy() / steps for k, v in total_losses.items()}
     if ema is not None:
         ema_losses = eval_try_without_grad(model, loader, ctx, ema, eval_samples)
-        losses.update({f"ema_{k}": v.item() / steps for k, v in ema_losses.items()})
+        losses.update({f"{k}": v.item() / steps if v.dim() == 0 else v.cpu().detach().numpy() / steps for k, v in ema_losses.items()})
     logger.info(f"Losses: {pformat(losses)}")
     model.train()
     return losses

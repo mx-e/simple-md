@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import tensorflow_datasets as tfds
@@ -6,6 +7,7 @@ from frozendict import frozendict
 from lib.types import DatasetSplits, Split
 from lib.types import Property as Props
 from loguru import logger
+from tqdm import tqdm
 
 qcml_props = frozendict(
     {
@@ -29,7 +31,7 @@ def get_qcml_dataset(
     dataset_version="1.0.0",
     copy_to_temp=False,
 ) -> DatasetSplits:
-    if splits is None:
+    if not all(isinstance(v, str) for v in splits.values()):
         splits = {"train": "train", "val": "val", "test": "test"}
     data_path = Path(data_dir) / dataset_name / dataset_version
     logger.info(f"Loading dataset from {data_path.resolve()}")
@@ -58,6 +60,17 @@ def get_qcml_dataset(
     builder = tfds.builder_from_directory(data_path)
 
     datasets = {k: builder.as_data_source(split=v, decoders=decoders) for k, v in splits.items()}
+    
+    # extract all SMILES strings as a set
+    smiles = {
+        split.value: list(set(example["smiles"].decode("utf-8") for example in datasets[split])) for split in datasets
+    }
+
+    # save the SMILES strings to a json file
+    with open("smiles.json", "w") as f:
+        json.dump(smiles, f)
+
+    exit()
 
     return DatasetSplits(
         splits=datasets,
