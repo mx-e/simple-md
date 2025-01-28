@@ -8,15 +8,15 @@ Single-GPU Benchmark Script:
 """
 
 from functools import partial
-import json
-import time
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 import numpy as np
+from scripts.lib.utils.filters import remove_net_force, remove_net_torque
 import torch as th
+from torch.profiler import record_function
 from loguru import logger
-import torch_tensorrt
+#import torch_tensorrt
 
 # Hydra / OmegaConf / Hydra-Zen
 from hydra_zen import builds, instantiate, load_from_yaml, store
@@ -27,28 +27,18 @@ import wandb
 
 # Project-specific imports
 from conf.base_conf import BaseConfig, configure_main
-from scripts.lib.datasets.utils import get_split_by_molecule_name
 from lib.data.loaders import get_loaders
 from lib.datasets import (
     get_md17_22_dataset,
-    get_rmd17_dataset,
-    get_ko2020_dataset,
-    get_qcml_dataset,
-    get_qm7x_dataset,
-    get_qm7x_pbe0_dataset,
 )
-from lib.ema import EMAModel
-from lib.loss import LossModule
-from lib.lr_scheduler import LRScheduler
-from lib.models import PairEncoder
-from lib.models.pair_encoder import NodeLevelRegressionHead
-from lib.train_loop import Predictor, evaluate
 from lib.types import PipelineConfig, Split
 from lib.utils.checkpoint import load_checkpoint
-from lib.utils.dist import get_amp, setup_device
+from lib.utils.dist import get_amp
 from lib.utils.helpers import get_hydra_output_dir
 from lib.utils.run import run
-from lib.models import PairEncoder, get_pair_encoder_pipeline_config
+from lib.models import get_pair_encoder_pipeline_config
+from lib.types import Property as Props
+
 
 pbuilds = partial(builds, zen_partial=True)  # For convenience
 
@@ -88,7 +78,9 @@ md17_salicylic_acid = pbuilds(
 
 benchmark_ds_store = store(group="bench.dataset")
 benchmark_ds_store(md17_aspirin, name="md17_aspirin")
-benchmark_ds_store(rmd17_aspirin, name="rmd17_aspirin")
+benchmark_ds_store(md17_ethanol, name="md17_ethanol")
+benchmark_ds_store(md17_naphthalene, name="md17_naphthalene")
+benchmark_ds_store(md17_salicylic_acid, name="md17_salicylic_acid")
 
 
 def measure_flops(model: th.nn.Module, sample_batch: dict, amp) -> float:
@@ -119,18 +111,14 @@ def measure_flops(model: th.nn.Module, sample_batch: dict, amp) -> float:
 
     return total_flops
 
-# ------------------------------------------------------------------------------
-# 3) Single-GPU benchmark function
-# ------------------------------------------------------------------------------
-
 def benchmark(
     cfg: BaseConfig,
     pretrain_model_dir: Path,
     checkpoint_name: str = "best_model",
     dataset=MISSING,
     compile_backend: Literal["inductor", "tensorrt", "eager"] = "inductor",
-    batch_size: int = 500,
-    measure_batches: int = 500,
+    batch_size: int = 10,
+    measure_steps: int = 500,
     warmup_steps: int = 50,
     compute_flops: bool = False,
     dtype: Literal["float32", "bfloat16", "float16"] = "bfloat16",
@@ -161,7 +149,7 @@ def benchmark(
     else:
         logger.info("Using PyTorch Eager (no torch.compile).")
 
-    data_splits = {"train": 2, "test": batch_size*(measure_batches+warmup_steps+1)}
+    data_splits = {"train": 2, "test": batch_size*(measure_steps+warmup_steps+1)}
     dataset_splits = dataset(splits=data_splits, rank=0)
     if pipeline_conf is None:
         try:
@@ -194,49 +182,71 @@ def benchmark(
         flops = measure_flops(model, sample_batch, amp=amp)
         logger.info(f"Estimated FLOPs for a single forward pass: {flops:,.0f}")
 
-    times = []
+    total_times = []
+    inference_times = []
     seen = 0
-    if measure_batches > 0:
-        logger.info(f"Measuring throughput for {measure_batches} batches (warmup={warmup_steps})...")
+    if measure_steps > 0:
+        logger.info(f"Measuring throughput for {measure_steps} batches (warmup={warmup_steps})...")
         model.eval()
+
+    with th.profiler.profile(
+        record_shapes=False,
+        with_stack=False,
+        activities=[
+            th.profiler.ProfilerActivity.CPU,
+            th.profiler.ProfilerActivity.CUDA,
+        ],
+        schedule=th.profiler.schedule(
+            wait=1, # skip jitting
+            warmup=warmup_steps,
+            active=measure_steps,
+        ),
+    ) as prof:
         with th.inference_mode(), amp:
-            for i, batch in enumerate(test_loader):
-                if i >= warmup_steps:
-                    start = th.cuda.Event(enable_timing=True)
-                    end = th.cuda.Event(enable_timing=True)
-                    start.record()
+            for batch in test_loader:
+                n_nodes = (batch[Props.atomic_numbers] != 0).sum(dim=1)
+                with record_function("model_inference"):
+                    outputs = model(batch)
+                with record_function("remove_net_force"):
+                    outputs[Props.forces] = remove_net_force(forces=outputs[Props.forces], n_nodes=n_nodes)
+                with record_function("remove_net_torque"):
+                    outputs[Props.forces] = remove_net_torque(positions=batch[Props.positions], forces=outputs[Props.forces], n_nodes=n_nodes)
+                seen += 1
+                prof.step()
 
-                _ = model(batch)
-
-                if i >= warmup_steps:
-                    end.record()
-                    th.cuda.synchronize()
-                    times.append(start.elapsed_time(end) / 1e3)
-                    seen += 1
-
-                if seen >= measure_batches:
+                if seen >= 1 + warmup_steps + measure_steps:
                     break
 
-        avg_time = np.mean(times) if times else 0.0
-        logger.info(f"Measured {seen} batches in {avg_time:.2f} sec")
-        throughput = (seen / avg_time) if avg_time > 0 else 0.0
+        print(prof.key_averages().table(sort_by="cpu_time_total",row_limit=50))
+        exit()
+
+        avg_total_time = np.mean(total_times) if total_times else 0.0
+        avg_inference_time = np.mean(inference_times) if inference_times else 0.0
+        postproc_time = total_times - inference_times
+        avg_postproc_time = np.mean(postproc_time) if postproc_time else 0.0
+        avg_percent_postproc = np.mean(postproc_time / total_times)
+        logger.info(f"Measured {seen} batches in {avg_total_time:.2f} sec")
+        logger.info(f"Avg Inference Latency (batch): {avg_inference_time:.2f} ms")
+        throughput = (seen / avg_total_time) if avg_total_time > 0 else 0.0
         logger.info(f"Throughput: {throughput:.2f} batches/sec, "
-                    f"Avg Latency (batch): {avg_time * 1000:.2f} ms")
+                    f"Avg Latency (batch): {avg_total_time * 1000:.2f} ms")
+        logger.info(f"Avg Postprocessing Latency (batch): {avg_postproc_time:.2f} ms")
+        logger.info(f"Avg Postprocessing Time %: {avg_percent_postproc:.2%}")
+        logger.info(f"Average procentual postprocessing time: {avg_percent_postproc:.2%}")
 
     # 10) Log results & histogram to W&B (if cfg.wandb=True)
-    if cfg.wandb and times:
-            wandb.log({"inference_timings": wandb.Histogram(times)})
+    if cfg.wandb and avg_total_time:
+            wandb.log({"inference_timings": wandb.Histogram(total_times)})
+            wandb.run.summary["avg_total_time"] = avg_total_time
+            wandb.run.summary["avg_inference_time"] = avg_inference_time
+            wandb.run.summary["avg_postproc_time"] = avg_postproc_time
+            wandb.run.summary["avg_percent_postproc"] = avg_percent_postproc
             wandb.run.summary["throughput"] = throughput
-            wandb.run.summary["avg_latency"] = avg_time
             if compute_flops:
                 wandb.run.summary["flops"] = flops
 
     # End W&B run
     wandb.finish()
-
-# ------------------------------------------------------------------------------
-# 4) Hydra entry point (single-GPU main)
-# ------------------------------------------------------------------------------
 
 p_bench = builds(
     benchmark,
