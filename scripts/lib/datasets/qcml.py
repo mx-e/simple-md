@@ -60,17 +60,6 @@ def get_qcml_dataset(
     builder = tfds.builder_from_directory(data_path)
 
     datasets = {k: builder.as_data_source(split=v, decoders=decoders) for k, v in splits.items()}
-    
-    # extract all SMILES strings as a set
-    smiles = {
-        split.value: list(set(example["smiles"].decode("utf-8") for example in datasets[split])) for split in datasets
-    }
-
-    # save the SMILES strings to a json file
-    with open("smiles.json", "w") as f:
-        json.dump(smiles, f)
-
-    exit()
 
     return DatasetSplits(
         splits=datasets,
