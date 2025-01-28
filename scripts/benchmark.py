@@ -1,36 +1,23 @@
 #! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data --bind /home/bbdc2/quantum/max/:/data container.sif python
-"""
-Single-GPU Benchmark Script:
- - Loads & compiles a model.
- - Evaluates metrics & measures throughput.
- - Optionally computes FLOPs using torch.profiler.
- - Logs the distribution of inference times to W&B as a histogram.
-"""
-
 from functools import partial
 import json
 import time
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 import numpy as np
 import torch as th
 from loguru import logger
 
-# Hydra / OmegaConf / Hydra-Zen
 from hydra_zen import builds, instantiate, load_from_yaml, store
 from hydra_zen.typing import Partial
 from omegaconf import MISSING
 
 import wandb
 
-# Project-specific imports
 from conf.base_conf import BaseConfig, configure_main
-from scripts.lib.datasets.utils import get_split_by_molecule_name
 from lib.data.loaders import get_loaders
-from lib.datasets import (
-    get_md17_22_dataset,
-)
+from lib.datasets import get_md17_22_dataset
 from lib.types import PipelineConfig, Split
 from lib.utils.checkpoint import load_checkpoint
 from lib.utils.dist import get_amp
@@ -39,7 +26,6 @@ from lib.utils.run import run
 from lib.models import get_pair_encoder_pipeline_config
 from lib.utils.filters import remove_net_force, remove_net_torque
 from lib.types import Property as Props
-
 
 
 pbuilds = partial(builds, zen_partial=True)  # For convenience
@@ -84,15 +70,7 @@ benchmark_ds_store(md17_ethanol, name="md17_ethanol")
 benchmark_ds_store(md17_naphthalene, name="md17_naphthalene")
 benchmark_ds_store(md17_salicylic_acid, name="md17_salicylic_acid")
 
-
-
 def measure_flops(model: th.nn.Module, sample_batch: dict, amp) -> float:
-    """
-    Performs a single forward pass under torch.profiler to estimate FLOPs.
-
-    Returns:
-        flops (float): total floating-point operations measured during the forward pass.
-    """
     import torch.profiler
 
     model.eval()
@@ -230,7 +208,6 @@ def benchmark(
         logger.info(f"Throughput: {throughput:.2f} batches/sec, "
                     f"Avg Latency (batch): {avg_total_time * 1000:.2f} ms")
 
-    # 10) Log results & histogram to W&B (if cfg.wandb=True)
     if cfg.wandb and total_times:
             wandb.run.summary["throughput"] = throughput
             wandb.run.summary["avg_latency"] = avg_total_time
@@ -240,12 +217,7 @@ def benchmark(
             if compute_flops:
                 wandb.run.summary["flops"] = flops
 
-    # End W&B run
     wandb.finish()
-
-# ------------------------------------------------------------------------------
-# 4) Hydra entry point (single-GPU main)
-# ------------------------------------------------------------------------------
 
 p_bench = builds(
     benchmark,
@@ -259,15 +231,6 @@ def main(
     pretrain_model_dir: str,
     bench: Partial[callable] = p_bench,
 ) -> None:
-    """
-    Hydra main for single-GPU benchmarking a model on a dataset.
-
-    Usage:
-      python single_gpu_benchmark.py pretrain_model_dir=/path/to/run
-      # or override dataset:    bench.dataset=qcml
-      # or override FLOPs:      bench.compute_flops=true
-      # or override backend:    bench.compile_backend=tensorrt
-    """
     logger.info(f"Running with base config: {cfg}")
     cfg.runtime.out_dir = get_hydra_output_dir()
     print(th.compiler.list_backends())
