@@ -128,8 +128,13 @@ def get_qm7x_dataset(
     else:
         molecule_names = [line.rstrip("\n") for line in Path.open(db_path.with_suffix(".txt"), "r")]
 
+    for split, ratio in splits.items():
+        if isinstance(ratio, int):
+            splits[split] = ratio / len(dataset)
+
+    # Use seed that was used during training of the model to prevent data leakage
     train_idx, test_idx, val_idx = non_overlapping_train_test_val_split_hash_based(
-        splits, molecule_names, seed
+        splits, molecule_names, seed=42
     )
 
     datasets = {

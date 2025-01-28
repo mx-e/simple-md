@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
+from scripts.lib.datasets.utils import get_split_by_molecule_name
 import torch as th
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -67,7 +68,7 @@ loss_module_forces = builds(
     LossModule,
     targets=["forces"],
     loss_types={"forces": "euclidean"},
-    metrics={"forces": ["mae", "mse", "euclidean", "cosine"]},
+    metrics={"forces": ["mae", "mse", "euclidean", "cosine", "norm_diff", "norm_var"]},
     compute_metrics_train=True,
 )
 pair_encoder_data_config = builds(
@@ -86,7 +87,7 @@ ft_loop = pbuilds(
     save_interval=50000,
     eval_samples=500,
     clip_grad=1.0,
-    ptdtype="float32",
+    ptdtype="bfloat16",
 )
 
 qcml_data = pbuilds(
@@ -101,189 +102,162 @@ rmd17_aspirin = pbuilds(
     get_rmd17_dataset,
     data_dir="/temp_data",
     molecule_name="aspirin",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md17_aspirin = pbuilds(
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="aspirin",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md17_ethanol = pbuilds(
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="ethanol",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md17_malonaldehyde = pbuilds(
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="malonaldehyde",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md17_naphthalene = pbuilds(
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="naphthalene",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md17_salicylic_acid = pbuilds(
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="salicylic_acid",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md17_toluene = pbuilds(
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="toluene",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md17_uracil = pbuilds(
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="uracil",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md17_azobenzene = pbuilds(
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="azobenzene",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md17_benzene = pbuilds(
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="benzene",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md17_paracetamol = pbuilds(
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="paracetamol",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md22_Ac_Ala3_NHMe = pbuilds(  # noqa: N816
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="Ac-Ala3-NHMe",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md22_DHA = pbuilds(  # noqa: N816
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="DHA",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md22_stachyose = pbuilds(
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="stachyose",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md22_AT_AT = pbuilds(  # noqa: N816
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="AT-AT",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md22_AT_AT_CG_CG = pbuilds(  # noqa: N816
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="AT-AT-CG-CG",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md22_buckyball_catcher = pbuilds(
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="buckyball-catcher",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 md22_double_walled_nanotube = pbuilds(
     get_md17_22_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="double-walled_nanotube",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 rmd17_azobenzene = pbuilds(
     get_rmd17_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="azobenzene",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 rmd17_benzene = pbuilds(
     get_rmd17_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="benzene",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 rmd17_ethanol = pbuilds(
     get_rmd17_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="ethanol",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 rmd17_malonaldehyde = pbuilds(
     get_rmd17_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="malonaldehyde",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 rmd17_naphthalene = pbuilds(
     get_rmd17_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="naphthalene",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 rmd17_paracetamol = pbuilds(
     get_rmd17_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="paracetamol",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 rmd17_salicylic_acid = pbuilds(
     get_rmd17_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="salicylic_acid",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 rmd17_toluene = pbuilds(
     get_rmd17_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="toluene",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 rmd17_uracil = pbuilds(
     get_rmd17_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="uracil",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 qm7x_pbe0_data = pbuilds(
@@ -296,41 +270,36 @@ qm7x_pbe0_data = pbuilds(
 
 qm7x_data = pbuilds(
     get_qm7x_dataset,
-    data_dir="./data",
+    data_dir="/data",
     work_dir="/temp_data",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 ko2020_ag_cluster = pbuilds(
     get_ko2020_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="Ag_cluster",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 ko2020_AuMgO = pbuilds(  # noqa: N816
     get_ko2020_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="AuMgO",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 ko2020_Carbon_chain = pbuilds(  # noqa: N816
     get_ko2020_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="Carbon_chain",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 ko2020_NaCl = pbuilds(  # noqa: N816
     get_ko2020_dataset,
-    data_dir="./data",
+    data_dir="/temp_data",
     molecule_name="NaCl",
-    splits={"train": 0.8, "val": 0.1, "test": 0.1},
 )
 
 
-dataset_store = store(group="ft/dataset")
+dataset_store = store(group="ft.dataset")
 dataset_store(qcml_data, name="qcml")
 dataset_store(rmd17_aspirin, name="rmd17_aspirin")
 dataset_store(md17_aspirin, name="md17_aspirin")
@@ -382,7 +351,8 @@ def finetune(
     few_shot_size: int = 9500,
     batch_size: int = 250,
     total_steps: int = 1000,
-    final_eval_samples: int = 500,
+    final_val_samples: int = 500,
+    final_test_samples: int = 10000,
     lr: float = 5e-5,
     grad_accum_steps: int = 1,
     lr_scheduler: Partial[callable] | None = p_cosine_scheduler,  # None = No schedule
@@ -406,6 +376,7 @@ def finetune(
         if loss is None:
             loss = instantiate(conf["train"]["loss"])
         model = Predictor(model, loss).to(device)
+
         ddp_args = {
             "device_ids": ([rank] if cfg.runtime.device == "cuda" else None),
         }
@@ -459,7 +430,8 @@ def finetune(
         )
 
         # data + loaders
-        data = dataset(rank)
+        splits={"train": few_shot_size, "test": final_test_samples}
+        data = dataset(rank, splits=splits)
         if pipeline_conf is None:
             try:
                 pipeline_conf = instantiate(conf["train"]["pipeline_conf"])
@@ -506,25 +478,25 @@ def finetune(
         if dist.is_initialized():
             dist.barrier()
         if rank == 0:
-            amp = get_amp("float32")
+            amp = get_amp("bfloat16")
             val_results = evaluate(
                 model=final_model,
                 loader=loaders[Split.val],
                 ctx=amp,
                 ema=ema,
-                eval_samples=final_eval_samples,
+                eval_samples=final_val_samples,
             )
             test_results = evaluate(
                 model=final_model,
                 loader=loaders[Split.test],
                 ctx=amp,
                 ema=ema,
-                eval_samples=final_eval_samples,
+                eval_samples=final_test_samples,
             )
             # save model and results
             if cfg.wandb is not None:
-                results_data = [[metric_name, metric, "val"] for metric_name, metric in val_results.items()] + [
-                    [metric_name, metric, "test"] for metric_name, metric in test_results.items()
+                results_data = [[metric_name, metric, "val"] for metric_name, metric in val_results.items() if isinstance(metric, (int, float))] + [
+                    [metric_name, metric, "test"] for metric_name, metric in test_results.items() if isinstance(metric, (int, float))
                 ]
                 results_table = wandb.Table(
                     columns=["metric", "value", "split"],
@@ -538,9 +510,14 @@ def finetune(
                 (cfg.runtime.out_dir / "eval_results.json").write_text(json.dumps(results_table._to_table_json()))
 
                 for metric_name, metric in val_results.items():
-                    cfg.wandb.run.summary[f"final_val/{metric_name}"] = metric
+                    if isinstance(metric, (int, float)):
+                        cfg.wandb.run.summary[f"final_val/{metric_name}"] = metric
                 for metric_name, metric in test_results.items():
-                    cfg.wandb.run.summary[f"final_test/{metric_name}"] = metric
+                    if isinstance(metric, (int, float)):
+                        cfg.wandb.run.summary[f"final_test/{metric_name}"] = metric
+
+                if 'molecule_name' in dataset.keywords.keys():
+                    cfg.wandb.run.summary["split_during_training"] = get_split_by_molecule_name(dataset.keywords['molecule_name'])
 
             save_checkpoint(
                 final_model.module.encoder,
@@ -557,7 +534,7 @@ def finetune(
 p_ft_func = pbuilds_full(finetune)
 
 
-@configure_main(extra_defaults=[{"ft/dataset": "qcml"}])
+@configure_main(extra_defaults=[{"ft.dataset": "qcml"}])
 def main(
     cfg: BaseConfig,  # you must keep this argument
     pretrain_model_dir: str,
@@ -567,7 +544,10 @@ def main(
     mp.set_start_method("spawn", force=True)
     world_size = cfg.runtime.n_gpu if th.cuda.is_available() else 1
     logger.info(f"Running {world_size} process(es)")
-    random_port = str(np.random.randint(20000, 50000))
+    rng = np.random.RandomState()  # port selection should be truly random
+    random_port = str(
+        rng.randint(20000, 50000),
+    )
     cfg.runtime.out_dir = get_hydra_output_dir()
 
     if world_size > 1:
