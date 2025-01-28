@@ -50,10 +50,6 @@ from lib.utils.helpers import get_hydra_output_dir
 from lib.utils.run import run
 from lib.models import PairEncoder, get_pair_encoder_pipeline_config
 
-# ------------------------------------------------------------------------------
-# 1) Store dataset configs (Hydra group="bench.dataset")
-# ------------------------------------------------------------------------------
-
 pbuilds = partial(builds, zen_partial=True)  # For convenience
 
 pair_encoder_data_config = builds(
@@ -72,19 +68,28 @@ md17_aspirin = pbuilds(
     molecule_name="aspirin",
 )
 
-rmd17_aspirin = pbuilds(
-    get_rmd17_dataset,
+md17_ethanol = pbuilds(
+    get_md17_22_dataset,
     data_dir="/temp_data",
-    molecule_name="aspirin",
+    molecule_name="ethanol",
+)
+
+md17_naphthalene = pbuilds(
+    get_md17_22_dataset,
+    data_dir="/temp_data",
+    molecule_name="naphthalene",
+)
+
+md17_salicylic_acid = pbuilds(
+    get_md17_22_dataset,
+    data_dir="/temp_data",
+    molecule_name="salicylic_acid",
 )
 
 benchmark_ds_store = store(group="bench.dataset")
 benchmark_ds_store(md17_aspirin, name="md17_aspirin")
 benchmark_ds_store(rmd17_aspirin, name="rmd17_aspirin")
 
-# ------------------------------------------------------------------------------
-# 2) Define a helper for FLOPs measurement (using PyTorch Profiler)
-# ------------------------------------------------------------------------------
 
 def measure_flops(model: th.nn.Module, sample_batch: dict, amp) -> float:
     """
