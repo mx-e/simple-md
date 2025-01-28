@@ -121,7 +121,7 @@ def benchmark(
     dataset=MISSING,
     compile_backend: Literal["inductor", "tensorrt", "eager"] = "inductor",
     batch_size: int = 10,
-    measure_batches: int = 500,
+    measure_steps: int = 500,
     warmup_steps: int = 50,
     compute_flops: bool = False,
     dtype: Literal["float32", "bfloat16", "float16"] = "bfloat16",
@@ -152,7 +152,7 @@ def benchmark(
     else:
         logger.info("Using PyTorch Eager (no torch.compile).")
 
-    data_splits = {"train": 2, "test": batch_size*(measure_batches+warmup_steps+1)}
+    data_splits = {"train": 2, "test": batch_size*(measure_steps+warmup_steps+1)}
     dataset_splits = dataset(splits=data_splits, rank=0)
     if pipeline_conf is None:
         try:
@@ -188,8 +188,8 @@ def benchmark(
     total_times = []
     inference_times = []
     seen = 0
-    if measure_batches > 0:
-        logger.info(f"Measuring throughput for {measure_batches} batches (warmup={warmup_steps})...")
+    if measure_steps > 0:
+        logger.info(f"Measuring throughput for {measure_steps} batches (warmup={warmup_steps})...")
         model.eval()
         with th.inference_mode(), amp:
             for i, batch in enumerate(test_loader):
@@ -213,7 +213,7 @@ def benchmark(
                     inference_times.append(inference - start)
                     seen += 1
 
-                if seen >= measure_batches:
+                if seen >= measure_steps:
                     break
         
         total_times = np.array(total_times)
@@ -226,7 +226,7 @@ def benchmark(
         logger.info(f"Avg Inference Time: {avg_inference_time * 1000:.2f} ms")
         logger.info(f"Avg Post-processing Time: {avg_postproc_time * 1000:.2f} ms")
         logger.info(f"Avg Post-processing Time (%): {avg_percent_postproc * 100:.2f}%")
-        throughput = (seen / avg_total_time) if avg_total_time > 0 else 0.0
+        throughput = (seen / total_times.sum()) if avg_total_time > 0 else 0.0
         logger.info(f"Throughput: {throughput:.2f} batches/sec, "
                     f"Avg Latency (batch): {avg_total_time * 1000:.2f} ms")
 
