@@ -226,7 +226,7 @@ def benchmark(
         logger.info(f"Avg Inference Time: {avg_inference_time * 1000:.2f} ms")
         logger.info(f"Avg Post-processing Time: {avg_postproc_time * 1000:.2f} ms")
         logger.info(f"Avg Post-processing Time (%): {avg_percent_postproc * 100:.2f}%")
-        throughput = (seen / total_times.sum()) if avg_total_time > 0 else 0.0
+        throughput = (seen / total_times.sum()) if len(total_times)>0 else 0.0
         logger.info(f"Throughput: {throughput:.2f} batches/sec, "
                     f"Avg Latency (batch): {avg_total_time * 1000:.2f} ms")
 
