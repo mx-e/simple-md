@@ -23,7 +23,7 @@ def generate_equidistant_rotations(N, device="cpu", optimize: bool = True) -> th
         points = optimize_rotation_distribution(points)
 
     R = th.stack([th.tensor(vector_to_rot_matrix(points[i].numpy())) for i in range(N)], dim=0)
-    return R
+    return R.float()
 
 
 def visualize_rotations(rotation_matrices: th.Tensor, save_path: str = "rotation_visualization.png") -> None:
@@ -115,7 +115,7 @@ def optimize_rotation_distribution(points: th.Tensor, num_steps: int = 1000, lr:
     points = points / th.norm(points, dim=1, keepdim=True)
 
     logger.info(f"Final loss = {objective_func(points).item()}")
-    return points.detach().clone().float()
+    return points.detach().clone()
 
 
 def vector_to_rot_matrix(target_vec: np.ndarray) -> np.ndarray:
