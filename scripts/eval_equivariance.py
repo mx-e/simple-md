@@ -27,6 +27,8 @@ from lib.utils.dist import get_amp, setup_device
 from lib.utils.helpers import get_hydra_output_dir
 from lib.utils.run import run
 from loguru import logger
+from ase.io import read
+from lib.types import property_dtype
 
 pbuilds = partial(builds, zen_partial=True)
 
@@ -39,14 +41,6 @@ qcml_data = builds(
     copy_to_temp=False,
 )
 
-loss_module = builds(
-    LossModule,
-    targets=["forces"],
-    loss_types={"forces": "euclidean"},
-    metrics={"forces": ["mae", "mse", "euclidean"]},
-    losses_per_mol=True,
-)
-
 pair_encoder_data_config = builds(
     get_pair_encoder_pipeline_config,
     augmentation_mult=1,
@@ -57,22 +51,65 @@ pair_encoder_data_config = builds(
     include_dipole=False,
 )
 
+ANG_TO_BOHR = 1.0 / 0.529177249
+
 
 @configure_main(extra_defaults=[])
 def main(
     cfg: BaseConfig,
     model_run_dir: Path,
     dataset=qcml_data,
+    xyz_structs: list[str] | None = [
+        "md17_ethanol",
+        "md17_benzene",
+        "md17_aspirin",
+        "md17_malonaldehyde",
+        "md17_naphthalene",
+        "md17_salicylic",
+        "md17_toluene",
+        "md17_uracil",
+        "c1h4",
+        "c2h2",
+        "c2h4",
+        "c2h6",
+        "c3h4",
+        "c3h8",
+        "c4h4",
+        "c4h10",
+        "c5h4",
+        "c5h12",
+        "c6h4",
+        "c6h14",
+        "c7h4",
+        "c7h16",
+        "c8h4",
+        "c8h18",
+        "c9h4",
+        "c9h20",
+        "c10h4",
+        "c10h22",
+        "c11h4",
+        "c11h24",
+        "c12h4",
+        "c12h26",
+        "c13h4",
+        "c13h28",
+        "c14h4",
+        "c14h30",
+        "c15h4",
+        "c15h32",
+        "c16h4",
+        "c16h34",
+    ],  # noqa: B006
     checkpoint_name: str = "best_model",
-    ptdtype: Literal["float32", "bfloat16", "float16"] = "float32",
-    loss_module=loss_module,
     pipeline_config=pair_encoder_data_config,
     n_test_samples: int = 2048,
+    init_struct_dir: Path = "data_md",
 ) -> None:
     logger.info(f"Running with base config: {cfg}")
     mp.set_start_method("spawn", force=True)
     job_dir = get_hydra_output_dir()
-    device, ctx = setup_device(), get_amp(ptdtype)
+    device = setup_device()
     model_run_conf_path = model_run_dir / ".hydra" / "config.yaml"
     model_run_conf = load_from_yaml(model_run_conf_path)
     if "ft" in model_run_conf:
@@ -86,29 +123,103 @@ def main(
     load_checkpoint(model, checkpoint_path)
     model = model.eval().to(device)
 
-    loaders = get_loaders(
-        rank=0,
-        batch_size=1,
-        grad_accum_steps=1,
-        world_size=1,
-        device=device,
-        dataset_splits=dataset,
-        pipeline_config=pipeline_config,
-        num_workers=0,
-    )
-
     out_dir = job_dir / "eval_equivariance"
     out_dir.mkdir(parents=True, exist_ok=True)
+    if xyz_structs is not None:
+        logger.info(
+            f"XYZ structs provided, evaluating equivariance for {len(xyz_structs)} structures instead of loading dataset."
+        )
+        valid_init_struct_names = [f.stem for f in Path(init_struct_dir).glob("*.xyz")]
+        for struct_name in xyz_structs:
+            assert struct_name in valid_init_struct_names, (
+                f"Provided structure {struct_name} not found in {init_struct_dir}"
+            )
+        evaluate_equivariance_structures(
+            output_dir=out_dir,
+            model=model,
+            struct_dir=init_struct_dir,
+            struct_names=xyz_structs,
+        )
+    else:
+        logger.info("Evaluating on dataset samples, for custom structures provide xyz_structs.")
+        loaders = get_loaders(
+            rank=0,
+            batch_size=1,
+            grad_accum_steps=1,
+            world_size=1,
+            device=device,
+            dataset_splits=dataset,
+            pipeline_config=pipeline_config,
+            num_workers=0,
+        )
+        evaluate_equivariance_dataset(output_dir=out_dir, model=model, loaders=loaders, n_test_samples=n_test_samples)
 
-    evaluate_equivariance(output_dir=out_dir, model=model, loaders=loaders, n_test_samples=n_test_samples)
+
+def evaluate_equivariance_structures(output_dir: Path, model, struct_dir: Path, struct_names: list[str]) -> None:
+    logger.info(f"Evaluating equivariance of the model on custom structures: {struct_names}")
+    std_deviations = {}
+
+    for struct_name in struct_names:
+        logger.info(f"Processing structure: {struct_name}")
+        xyz_path = struct_dir / f"{struct_name}.xyz"
+
+        device = model.parameters().__next__().device  # load struct to same device as model
+        struct_data = load_xyz_structure(xyz_path, device=device)
+        struct_loader = [struct_data]  # Single-item loader
+
+        struct_deviations = {}
+        for n_averaging_rotations in [1, 2, 4, 8, 16, 32, 64, 128]:
+            if n_averaging_rotations > 1:
+                logger.info(f"Generating {n_averaging_rotations} equidistant rotations to average model predictions.")
+                equidistant_rotations = generate_equidistant_rotations(n_averaging_rotations)
+                logger.info(analyze_rotation_distribution(equidistant_rotations))
+            else:
+                equidistant_rotations = th.eye(3).unsqueeze(0)
+
+            std_dev = compute_equivariance(
+                model=model,
+                loader=struct_loader,
+                fa_rotation_matrices=equidistant_rotations,
+                n_samples=1,  # Single structure
+            )
+            struct_deviations[n_averaging_rotations] = std_dev
+
+        std_deviations[struct_name] = struct_deviations
+
+    logger.info(f"Results: {std_deviations}")
+    # Save as yaml
+    out_path = output_dir / "equivariance_results_structures.yaml"
+    with out_path.open("w") as f:
+        yaml.dump(std_deviations, f)
+    logger.info(f"Results saved in {out_path}")
+    return std_deviations
 
 
-def evaluate_equivariance(output_dir: Path, model, loaders, n_test_samples) -> None:
+def load_xyz_structure(xyz_path: Path, device) -> dict:
+    atoms = read(str(xyz_path))
+    positions = th.tensor(atoms.get_positions()).unsqueeze(0) * ANG_TO_BOHR
+    atomic_numbers = th.tensor(atoms.get_atomic_numbers()).unsqueeze(0)
+    mask = th.ones_like(atomic_numbers)
+    charge = th.tensor([atoms.info.get("charge", 0)]).unsqueeze(0)
+    multiplicity = th.tensor([atoms.info.get("multiplicity", 1)]).unsqueeze(0)
+
+    batch = {
+        Props.positions: positions,
+        Props.atomic_numbers: atomic_numbers,
+        Props.mask: mask,
+        Props.charge: charge,
+        Props.multiplicity: multiplicity,
+    }
+    batch = {k: v.to(property_dtype[k]).to(device) for k, v in batch.items()}
+    return batch
+
+
+def evaluate_equivariance_dataset(output_dir: Path, model, loaders, n_test_samples) -> None:
     logger.info("Evaluating equivariance of the model.")
     std_deviations = {str(Split.train): {}, str(Split.test): {}, str(Split.val): {}}
 
     for split, loader in loaders.items():
-        for n_averaging_rotations in [1, 2, 4, 8, 16, 32, 64, 128]:
+        for n_averaging_rotations in [1, 2, 4, 8, 16, 32, 64, 128, 256]:
             if n_averaging_rotations > 1:
                 logger.info(f"Generating {n_averaging_rotations} equidistant rotation to average model predictions.")
                 equidistant_rotations = generate_equidistant_rotations(n_averaging_rotations)
@@ -140,20 +251,9 @@ def compute_equivariance(
     stds = []
 
     for mol in islice(loader, n_samples):
-        # augment positions
-        for k, v in mol.items():
-            mol[k] = v.repeat_interleave(n_rotations_eval, dim=0)
-
-        positions = mol[Props.positions].double()  # (n_rotations, n_atoms, 3)
-
-        n_batches, _, _ = positions.size()
-        R = get_random_rotations(n_batches, positions.device).double()  # (n_rotations, 3, 3)
-        mol[Props.positions] = th.bmm(positions, R)  # (n_rotations, n_atoms, 3)
-
-        R_inv = R.transpose(1, 2)  # (n_rotations, 3, 3)
-
+        mol_so3_sample, R_inv = augment_positions_with_SO3_sample(batch=mol, n_rotations_eval=n_rotations_eval)
         forces_mol = get_batch_force_predictions(
-            batch=mol,
+            batch=mol_so3_sample,
             model=model,
             n_frame_averaging=n_model_rots,
             fa_rotation_matrices=fa_rotation_matrices,
@@ -169,6 +269,25 @@ def compute_equivariance(
     mean_std_deviation = stds.mean().item()
     logger.info(f"Mean distance from group mean with averaging over {n_model_rots} rotations: {mean_std_deviation}")
     return mean_std_deviation
+
+
+def augment_positions_with_SO3_sample(  # noqa: N802
+    batch: dict,
+    n_rotations_eval: int,
+) -> None:
+    batch = batch.copy()
+    # augment positions
+    for k, v in batch.items():
+        batch[k] = v.repeat_interleave(n_rotations_eval, dim=0)
+
+    positions = batch[Props.positions].double()  # (n_rotations, n_atoms, 3)
+
+    n_batches, _, _ = positions.size()
+    R = get_random_rotations(n_batches, positions.device).double()  # (n_rotations, 3, 3)
+    batch[Props.positions] = th.bmm(positions, R)  # (n_rotations, n_atoms, 3)
+
+    R_inv = R.transpose(1, 2)  # (n_rotations, 3, 3)
+    return batch, R_inv
 
 
 def get_batch_force_predictions(
