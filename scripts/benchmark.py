@@ -207,8 +207,22 @@ def benchmark(
         throughput = (seen / total_times.sum()) if len(total_times)>0 else 0.0
         logger.info(f"Throughput: {throughput:.2f} batches/sec, "
                     f"Avg Latency (batch): {avg_total_time * 1000:.2f} ms")
+        
+                    # save metrics and data to json file
+        metrics = {
+            "throughput": throughput,
+            "avg_latency": avg_total_time,
+            "avg_inference_time": avg_inference_time,
+            "avg_postproc_time": avg_postproc_time,
+            "avg_postproc_percent": avg_percent_postproc,
+            "total_times": total_times.tolist(),
+            "inference_times": inference_times.tolist(),
+            "flops": flops if compute_flops else None,
+        }
+        with open(cfg.runtime.out_dir / "metrics.json", "w") as f:
+            json.dump(metrics, f)
 
-    if cfg.wandb and total_times:
+    if cfg.wandb and len(total_times)>0:
             wandb.run.summary["throughput"] = throughput
             wandb.run.summary["avg_latency"] = avg_total_time
             wandb.run.summary["avg_inference_time"] = avg_inference_time
@@ -216,6 +230,7 @@ def benchmark(
             wandb.run.summary["avg_postproc_percent"] = avg_percent_postproc
             if compute_flops:
                 wandb.run.summary["flops"] = flops
+
 
     wandb.finish()
 

@@ -186,7 +186,7 @@ def get_ko2020_dataset(
 
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
-    dataset = NPZDataset(out_file_paths[molecule_name], ko2020_props, force_unit="kcal/(mol·Å)", coord_unit="Å")
+    dataset = NPZDataset(out_file_paths[molecule_name], ko2020_props, force_unit="Hartree/Bohr", coord_unit="Bohr")
 
     # get split in which this molecule is probably included during training
     split_name = get_split_by_molecule_name(molecule_name)
@@ -194,7 +194,10 @@ def get_ko2020_dataset(
 
     index_array = np.arange(len(dataset))
     train_idx, test_val_idx = train_test_split(index_array, train_size=splits["train"], random_state=seed)
-    test_idx, val_idx = train_test_split(test_val_idx, train_size=splits["test"], random_state=seed)
+    if splits["test"] != len(test_val_idx):
+        test_idx, val_idx = train_test_split(test_val_idx, train_size=splits["test"], random_state=seed)
+    else:
+        test_idx, val_idx = test_val_idx, []
 
     datasets = {
         Split.train: Subset(dataset, train_idx),

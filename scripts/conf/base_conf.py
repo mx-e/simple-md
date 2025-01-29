@@ -30,7 +30,7 @@ class BaseConfig:
 
 BaseSlurmConfig = builds(
     SlurmConfig,
-    partition="gpu-5h",
+    partition="gpu-2h",
     cpus_per_task=8,
     gpus_per_task=1,
     memory_gb=32,
@@ -52,14 +52,14 @@ BaseJobConfig = builds(
 
 BaseSweepConfig = builds(
     SweepJob,
-    num_workers=12,
-    sweep_id="new_md22_exp",
-    #parameters={"ft.few_shot_size": [95,950,9500,95000]},
+    num_workers=6,
+    sweep_id="new_md17_exp",
+    #parameters={"pretrain_model_dir":["/data/models/pretrained/forces_4gpuday", "/data/models/pretrained/forces_16gpuday"],"cfg.seed": [1,2,3]},
     #parameters={"ft.dataset": ["rmd17_aspirin","md17_aspirin","md17_ethanol","md17_malonaldehyde","md17_naphthalene","md17_salicylic_acid","md17_toluene","md17_uracil","md17_azobenzene","md17_benzene","md17_paracetamol","md22_Ac_Ala3_NHMe","md22_DHA","md22_stachyose","md22_AT_AT","md22_AT_AT_CG_CG","md22_buckyball_catcher","md22_double_walled_nanotube","rmd17_azobenzene","rmd17_benzene","rmd17_ethanol","rmd17_malonaldehyde","rmd17_naphthalene","rmd17_paracetamol","rmd17_salicylic_acid","rmd17_toluene","rmd17_uracil","qm7x_pbe0","qm7x","ko2020_ag_cluster","ko2020_AuMgO","ko2020_Carbon_chain","ko2020_NaCl"]},
-    parameters={"pretrain_model_dir":["/data/models/pretrained/forces_4gpuday", "/data/models/pretrained/forces_16gpuday"],"ft.dataset": ["md22_Ac_Ala3_NHMe","md22_DHA","md22_stachyose","md22_AT_AT","md22_AT_AT_CG_CG","md22_buckyball_catcher"]},
-    #parameters={"pretrain_model_dir":["/data/models/pretrained/forces_4gpuday", "/data/models/pretrained/forces_16gpuday"],"cfg.seed": [1,2,3],"ft.dataset": ["md17_aspirin","md17_ethanol","md17_naphthalene","md17_salicylic_acid"]},
+    #parameters={"pretrain_model_dir":["/data/models/pretrained/forces_4gpuday", "/data/models/pretrained/forces_16gpuday"],"ft.dataset": ["md22_Ac_Ala3_NHMe","md22_DHA","md22_stachyose","md22_AT_AT","md22_AT_AT_CG_CG","md22_buckyball_catcher"]},
+    parameters={"pretrain_model_dir":["/data/models/pretrained/forces_4gpuday", "/data/models/pretrained/forces_16gpuday"],"cfg.seed": [1,2,3],"ft.dataset": ["md17_aspirin","md17_ethanol","md17_naphthalene","md17_salicylic_acid"]},
     #parameters={"pretrain_model_dir":["/data/models/pretrained/forces_4gpuday", "/data/models/pretrained/forces_16gpuday"],"cfg.seed": [1,2,3],"ft.dataset": ["rmd17_aspirin","rmd17_ethanol","rmd17_naphthalene","rmd17_salicylic_acid"]},
-    #parameters={"pretrain_model_dir":["/data/models/pretrained/forces_4gpuday", "/data/models/pretrained/forces_16gpuday"],"cfg.seed": [1,2,3],"ft.dataset": ["ko2020_ag_cluster","ko2020_AuMgO","ko2020_Carbon_chain","ko2020_NaCl"]},
+    #parameters={"pretrain_model_dir":["/data/models/pretrained/forces_4gpuday", "/data/models/pretrained/forces_16gpuday"],"ft.dataset": ["ko2020_ag_cluster","ko2020_AuMgO","ko2020_Carbon_chain","ko2020_NaCl"]},
     #parameters={"pretrain_model_dir":["/data/models/pretrained/forces_4gpuday", "/data/models/pretrained/forces_16gpuday"],"cfg.seed": [1,2,3],"ft.dataset": ["qm7x_pbe0","qm7x"]},
 
     builds_bases=(BaseJobConfig,),

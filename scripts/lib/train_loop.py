@@ -95,17 +95,22 @@ def train_loop(
             if (real_step + 1) % eval_interval == 0 and rank == 0:
                 del loss, out
                 th.cuda.empty_cache()
-                val_loss = evaluate(model, loaders[Split.val], ctx, ema, eval_samples)
-                lr_scheduler.step_on_loss(real_step, val_loss)
-                log_dict(
-                    val_loss,
-                    real_step - 1,
-                    log_wandb=wandb,
-                    key_suffix=f"_{Split.val}",
-                )
+                try:
+                    val_loss = evaluate(model, loaders[Split.val], ctx, ema, eval_samples)
+                    lr_scheduler.step_on_loss(real_step, val_loss)
+                    log_dict(
+                        val_loss,
+                        real_step - 1,
+                        log_wandb=wandb,
+                        key_suffix=f"_{Split.val}",
+                    )
+                except Exception as e:
+                    val_loss = None
+                    logger.info("Error during validation. Skipping validation")
+                    logger.info(e)
 
                 if best_val is None or val_loss["total"] < best_val or always_eval_test:
-                    best_val = val_loss["total"]
+                    best_val = val_loss["total"] if val_loss is not None else None
                     test_loss = evaluate(model, loaders[Split.test], ctx, ema, eval_samples)
                     save_checkpoint(
                         model.module.encoder,
@@ -159,6 +164,8 @@ def eval_try_without_grad(model, loader, ctx, ema, eval_samples) -> dict:
 
 
 def evaluate(model, loader, ctx, ema, eval_samples) -> dict:
+    if eval_samples <= 0:
+        return {}
     model.eval()
     logger.info(f"Evaluating on {eval_samples} samples")
     steps = eval_samples // loader.batch_size

@@ -68,7 +68,7 @@ loss_module_forces = builds(
     LossModule,
     targets=["forces"],
     loss_types={"forces": "euclidean"},
-    metrics={"forces": ["mae", "mse", "euclidean", "cosine", "norm_diff", "norm_var"]},
+    metrics={"forces": ["mae", "mse", "euclidean", "cosine", "norm_var"]},
     compute_metrics_train=True,
 )
 pair_encoder_data_config = builds(
@@ -87,7 +87,7 @@ ft_loop = pbuilds(
     save_interval=50000,
     eval_samples=500,
     clip_grad=1.0,
-    ptdtype="bfloat16",
+    ptdtype="float32",
 )
 
 qcml_data = pbuilds(
@@ -478,7 +478,7 @@ def finetune(
         if dist.is_initialized():
             dist.barrier()
         if rank == 0:
-            amp = get_amp("bfloat16")
+            amp = get_amp("float32")
             val_results = evaluate(
                 model=final_model,
                 loader=loaders[Split.val],
@@ -495,9 +495,11 @@ def finetune(
             )
             # save model and results
             if cfg.wandb is not None:
-                results_data = [[metric_name, metric, "val"] for metric_name, metric in val_results.items() if isinstance(metric, (int, float))] + [
-                    [metric_name, metric, "test"] for metric_name, metric in test_results.items() if isinstance(metric, (int, float))
-                ]
+                results_data = []
+                if val_results is not None:
+                    results_data += [[metric_name, metric, "val"] for metric_name, metric in val_results.items() if isinstance(metric, (int, float))]
+                if test_results is not None:
+                    results_data += [[metric_name, metric, "test"] for metric_name, metric in test_results.items() if isinstance(metric, (int, float))]
                 results_table = wandb.Table(
                     columns=["metric", "value", "split"],
                     data=results_data,
