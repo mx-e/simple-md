@@ -48,7 +48,7 @@ def download_md17_22_dataset(dataset_path: Path, molecule: str) -> None:
     logger.info("Downloading MD17 dataset")
     # Download dataset to dataset_path
     mol_path = dataset_path / _filenames[molecule]
-    url = "http://www.quantum-machine.org/gdml/data/npz/" + _filenames[molecule]
+    url = "http://www.quantum-machine.org/gdml/repo/datasets/" + _filenames[molecule]
     request.urlretrieve(url, mol_path)  # noqa: S310
     logger.info(f"Downloaded {url} to {dataset_path}")
 
@@ -79,18 +79,17 @@ def get_md17_22_dataset(
     dataset = NPZDataset(file_path, md17_props, force_unit="kcal/(mol·Å)", coord_unit="Å")
 
     # get split in which this molecule is probably included during training
-    split_name = get_split_by_molecule_name(molecule_name, splits, seed)
-    logger.info(f"This molecule was probably included in the {split_name} split during training.")
+    split_name = get_split_by_molecule_name(molecule_name)
+    logger.info(f"This molecule was included in {'the '+ split_name if split_name != "unknown" else 'no '} split during training.")
 
-    ds_len = len(dataset)
-    index_array = np.arange(ds_len)
-    train_val, test = train_test_split(index_array, test_size=int(ds_len * splits["test"]), random_state=seed)
-    train, val = train_test_split(train_val, test_size=int(ds_len * splits["val"]), random_state=seed)
+    index_array = np.arange(len(dataset))
+    train_idx, test_val_idx = train_test_split(index_array, train_size=splits["train"], random_state=seed)
+    test_idx, val_idx = train_test_split(test_val_idx, train_size=splits["test"], random_state=seed)
 
     datasets = {
-        Split.train: Subset(dataset, train),
-        Split.val: Subset(dataset, val),
-        Split.test: Subset(dataset, test),
+        Split.train: Subset(dataset, train_idx),
+        Split.val: Subset(dataset, val_idx),
+        Split.test: Subset(dataset, test_idx),
     }
 
     return DatasetSplits(

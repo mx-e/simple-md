@@ -80,20 +80,19 @@ def get_rmd17_dataset(
         dist.barrier()
 
     # get split in which this molecule is probably included during training
-    split_name = get_split_by_molecule_name(molecule_name, splits={'train': 0.8, 'test':0.1, 'val': 0.1}, seed=42)
-    logger.info(f"This molecule was probably included in the {split_name} split during training.")
+    split_name = get_split_by_molecule_name(molecule_name)
+    logger.info(f"This molecule was included in {'the '+ split_name if split_name != "unknown" else 'no '} split during training.")
 
     dataset = NPZDataset(file_path, props=rmd17_props, force_unit="kcal/(mol·Å)", coord_unit="Å")
 
-    ds_len = len(dataset)
-    index_array = np.arange(ds_len)
-    train_val, test = train_test_split(index_array, test_size=int(ds_len * splits["test"]), random_state=seed)
-    train, val = train_test_split(train_val, test_size=int(ds_len * splits["val"]), random_state=seed)
+    index_array = np.arange(len(dataset))
+    train_idx, test_val_idx = train_test_split(index_array, train_size=splits["train"], random_state=seed)
+    test_idx, val_idx = train_test_split(test_val_idx, train_size=splits["test"], random_state=seed)
 
     datasets = {
-        Split.train: Subset(dataset, train),
-        Split.val: Subset(dataset, val),
-        Split.test: Subset(dataset, test),
+        Split.train: Subset(dataset, train_idx),
+        Split.val: Subset(dataset, val_idx),
+        Split.test: Subset(dataset, test_idx),
     }
 
     return DatasetSplits(
