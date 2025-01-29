@@ -32,7 +32,7 @@ pbuilds = partial(builds, zen_partial=True)  # For convenience
 
 pair_encoder_data_config = builds(
     get_pair_encoder_pipeline_config,
-    augmentation_mult=2,
+    augmentation_mult=1,
     random_rotation=True,
     random_reflection=True,
     center_positions=True,
