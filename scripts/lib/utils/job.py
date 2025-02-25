@@ -51,7 +51,7 @@ class SlurmConfig:
             params["cpus_per_task"] = self.cpus_per_task
 
         if self.gpus_per_task:
-            params["slurm_gpus_per_node"] = self.gpus_per_task
+            params["slurm_gpus_per_task"] = self.gpus_per_task
 
         if self.memory_gb:
             params["mem_gb"] = self.memory_gb
@@ -105,11 +105,14 @@ class Job:
 
     def run(self) -> None:
         """Run the job on the cluster."""
+        hydra_run_dir = "./outputs/runs/${now:%Y-%m-%d}/${now:%H-%M-%S-%f}"
+
         command = [
             "python",
             self.get_absolute_program_path(sys.argv[0]),
             *self.filter_args(sys.argv[1:]),
             "cfg/wandb=log",
+            f"hydra.run.dir={hydra_run_dir}",
         ]
         function = CommandFunction(command)
 
@@ -175,12 +178,14 @@ class SweepJob(Job):
         parameters = {cfg_key: {"values": list(values)} for cfg_key, values in self.parameters.items()}
         metric = {"goal": self.metric_goal, "name": self.metric_name}
         program, args = self.get_absolute_program_path(sys.argv[0]), self.filter_args(sys.argv[1:])
+        hydra_run_dir = "./outputs/sweeps/" + self.sweep_id + "/${now:%H-%M-%S-%f}"
         command = [
             "${env}",
             "${interpreter}",
             "${program}",
             *args,
             "cfg/wandb=log",
+            f"hydra.run.dir={hydra_run_dir}",
             "${args_no_hyphens}",
         ]
 

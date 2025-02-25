@@ -36,7 +36,7 @@ BaseSlurmConfig = builds(
     memory_gb=32,
     nodes=1,
     tasks_per_node=1,
-    exclude="head001,head073",
+    exclude="head001",
     constraint="h100|80gb",
 )
 
@@ -53,7 +53,7 @@ BaseJobConfig = builds(
 BaseSweepConfig = builds(
     SweepJob,
     num_workers=12,
-    sweep_id="md17_from_scratch",
+    sweep_id="md17_pretrain_9500",
     parameters={
         "cfg.seed": [1, 2, 3],
         "train.data": ["md17_ethanol", "md17_aspirin", "md17_naphthalene", "md17_salicylic"],
