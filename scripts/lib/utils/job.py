@@ -51,7 +51,7 @@ class SlurmConfig:
             params["cpus_per_task"] = self.cpus_per_task
 
         if self.gpus_per_task:
-            params["slurm_gpus_per_task"] = self.gpus_per_task
+            params["slurm_gpus_per_node"] = self.gpus_per_task
 
         if self.memory_gb:
             params["mem_gb"] = self.memory_gb

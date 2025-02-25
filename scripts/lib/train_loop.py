@@ -46,7 +46,7 @@ def train_loop(
     ema: EMAModel | None = None,
     wandb: WandBConfig | None = None,
     clip_grad: float = 1.0,
-    ptdtype: Literal["float32", "bfloat16", "float16"] = "float32",
+    ptdtype: Literal["float32", "bfloat16", "float16", "float64"] = "float32",
     always_eval_test: bool = False,
 ) -> None:
     lr_scheduler = LRScheduler() if lr_scheduler is None else lr_scheduler
@@ -87,7 +87,9 @@ def train_loop(
 
             # logging
             if real_step % log_interval == 0 and rank == 0:
-                loss_dict = {k: loss.item() if loss.dim() == 0 else loss.cpu().detach().numpy() for k, loss in losses.items()}
+                loss_dict = {
+                    k: loss.item() if loss.dim() == 0 else loss.cpu().detach().numpy() for k, loss in losses.items()
+                }
                 loss_dict["lr"] = optimizer.param_groups[0]["lr"]
                 log_dict(loss_dict, real_step, log_wandb=wandb)
 
@@ -167,19 +169,24 @@ def evaluate(model, loader, ctx, ema, eval_samples) -> dict:
     if eval_samples <= 0:
         return {}
     model.eval()
+    eval_samples = min(eval_samples, len(loader.dataset))
     logger.info(f"Evaluating on {eval_samples} samples")
     steps = eval_samples // loader.batch_size
-    assert eval_samples <= len(loader.dataset), (
-        f"Eval samples must be less than the dataset size but got {eval_samples} > {len(loader.dataset)}"
-    )
     assert eval_samples % loader.batch_size == 0, (
         f"Eval samples must be divisible by the batch size, but got {eval_samples} % {loader.batch_size}"
     )
     total_losses = eval_try_without_grad(model, loader, ctx, None, eval_samples)
-    losses = {f"{k}": v.item() / steps if v.dim() == 0 else v.cpu().detach().numpy() / steps for k, v in total_losses.items()}
+    losses = {
+        f"{k}": v.item() / steps if v.dim() == 0 else v.cpu().detach().numpy() / steps for k, v in total_losses.items()
+    }
     if ema is not None:
         ema_losses = eval_try_without_grad(model, loader, ctx, ema, eval_samples)
-        losses.update({f"{k}": v.item() / steps if v.dim() == 0 else v.cpu().detach().numpy() / steps for k, v in ema_losses.items()})
+        losses.update(
+            {
+                f"ema_{k}": v.item() / steps if v.dim() == 0 else v.cpu().detach().numpy() / steps
+                for k, v in ema_losses.items()
+            }
+        )
     logger.info(f"Losses: {pformat(losses)}")
     model.train()
     return losses

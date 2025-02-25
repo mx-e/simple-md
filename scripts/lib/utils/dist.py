@@ -47,6 +47,7 @@ ptd_name_to_type = {
     "float32": th.float32,
     "bfloat16": th.bfloat16,
     "float16": th.float16,
+    "float64": th.float64,
 }
 
 
