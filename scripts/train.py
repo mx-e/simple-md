@@ -24,6 +24,10 @@ from lib.utils.run import run
 from loguru import logger
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel as DDP
+from lib.datasets import get_md17_22_dataset
+from hydra_zen import store
+from lib.types import Split
+from omegaconf import MISSING
 
 pbuilds = partial(builds, zen_partial=True)
 pbuilds_full = partial(builds, zen_partial=True, populate_full_signature=True)
@@ -41,12 +45,12 @@ p_cosine_scheduler = pbuilds(
     get_lr_scheduler,
     scheduler_type="cosine_warmup",
     warmup_steps=5000,
-    min_lr=1e-7,
+    min_lr=1e-9,
 )
 loss_module_forces = builds(
     LossModule,
     targets=["forces"],
-    loss_types={"forces": "mse"},
+    loss_types={"forces": "euclidean"},
     metrics={"forces": ["mae", "mse", "euclidean"]},
     compute_metrics_train=False,
 )
@@ -83,8 +87,8 @@ pair_encoder_data_config = builds(
     random_rotation=True,
     random_reflection=True,
     center_positions=True,
-    dynamic_batch_size_cutoff=29,
-    include_dipole=True,
+    dynamic_batch_size_cutoff=100000,
+    include_dipole=False,
 )
 qcml_data = pbuilds(
     get_qcml_dataset,
@@ -93,15 +97,47 @@ qcml_data = pbuilds(
     dataset_version="1.0.0",
     copy_to_temp=True,
 )
+md17_ethanol = pbuilds(
+    get_md17_22_dataset,
+    data_dir="/data",
+    molecule_name="ethanol",
+    splits={"train": 9500, "val": 500, "test": 10000},
+)
+md_17_aspirin = pbuilds(
+    get_md17_22_dataset,
+    data_dir="/data",
+    molecule_name="aspirin",
+    splits={"train": 9500, "val": 500, "test": 10000},
+)
+md_17_naphthalene = pbuilds(
+    get_md17_22_dataset,
+    data_dir="/data",
+    molecule_name="naphthalene",
+    splits={"train": 9500, "val": 500, "test": 10000},
+)
+md_17_salicylic_acid = pbuilds(
+    get_md17_22_dataset,
+    data_dir="/data",
+    molecule_name="salicylic_acid",
+    splits={"train": 9500, "val": 500, "test": 10000},
+)
+
 pretrain_loop = pbuilds(
     train_loop,
     log_interval=5,
-    eval_interval=5000,
+    eval_interval=2000,
     save_interval=50000,
-    eval_samples=50000,
+    eval_samples=10000,
     clip_grad=1.0,
     ptdtype="float32",
 )
+
+dataset_store = store(group="train.data")
+dataset_store(md17_ethanol, name="md17_ethanol")
+dataset_store(md_17_aspirin, name="md17_aspirin")
+dataset_store(md_17_naphthalene, name="md17_naphthalene")
+dataset_store(md_17_salicylic_acid, name="md17_salicylic")
+dataset_store(qcml_data, name="qcml")
 
 
 def train(
@@ -110,15 +146,15 @@ def train(
     world_size: int,
     cfg: BaseConfig,
     model: nn.Module = pair_encoder_model,
-    data: DatasetSplits = qcml_data,
     pipeline_conf: PipelineConfig = pair_encoder_data_config,
     loss: LossModule = loss_module_forces,
+    data=MISSING,
     train_loop: Partial[callable] | None = pretrain_loop,
     lr_scheduler: Partial[callable] | None = p_cosine_scheduler,
     ema: Partial[EMAModel] | None = p_ema,
     optimizer: Partial[th.optim.Optimizer] = p_optim,
-    batch_size: int = 256,
-    total_steps: int = 220_000,
+    batch_size: int = 250,
+    total_steps: int = 250_000,
     lr: float = 5e-4,
     grad_accum_steps: int = 1,
     checkpoint_path: str | None = None,
@@ -153,7 +189,11 @@ def train(
             device=device,
             dataset_splits=data,
             pipeline_config=pipeline_conf,
+            num_workers=0,
         )
+        logger.info(f"Train samples: {len(loaders[Split.train].dataset)}")
+        logger.info(f"Val samples: {len(loaders[Split.val].dataset)}")
+        logger.info(f"Test samples: {len(loaders[Split.test].dataset)}")
         start_step = 0
         if checkpoint_path is not None:
             start_step = load_checkpoint(predictor.encoder, checkpoint_path, optimizer, ema)
@@ -191,7 +231,7 @@ def train(
 p_train_func = pbuilds_full(train)
 
 
-@configure_main(extra_defaults=[])
+@configure_main(extra_defaults=[{"train.data": "md17_ethanol"}])
 def main(
     cfg: BaseConfig,  # you must keep this argument
     cfg_version: str = "1.1",  # noqa: ARG001 saving config version to track changes in signatures eg for finetuning
@@ -219,4 +259,5 @@ def main(
 
 
 if __name__ == "__main__":
+    dataset_store.add_to_hydra_store()
     run(main)
