@@ -80,11 +80,15 @@ def get_md17_22_dataset(
 
     # get split in which this molecule is probably included during training
     split_name = get_split_by_molecule_name(molecule_name)
-    logger.info(f"This molecule was included in {'the '+ split_name if split_name != "unknown" else 'no '} split during training.")
+    logger.info(
+        f"This molecule was included in {'the ' + split_name if split_name != 'unknown' else 'no '} split during training."
+    )
 
     index_array = np.arange(len(dataset))
     train_idx, test_val_idx = train_test_split(index_array, train_size=splits["train"], random_state=seed)
     test_idx, val_idx = train_test_split(test_val_idx, train_size=splits["test"], random_state=seed)
+    if splits.get("val") and splits.get("val") < len(val_idx):
+        val_idx, _ = train_test_split(val_idx, train_size=splits["val"], random_state=seed)
 
     datasets = {
         Split.train: Subset(dataset, train_idx),

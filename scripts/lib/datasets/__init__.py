@@ -5,3 +5,4 @@ from .load_atoms_datasets import get_rMD17_dataset as get_la_rmd17_dataset, get_
 from .qm7x import get_qm7x_dataset
 from .qm7x_pbe0 import get_qm7x_pbe0_dataset
 from .ko2020 import get_ko2020_dataset
+from .md17_ccsd import get_md17_ccsd_dataset

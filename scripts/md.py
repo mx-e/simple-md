@@ -72,14 +72,14 @@ def get_thermostat(
 def main(
     cfg: BaseConfig,
     timestep: float = 0.5,
-    n_data_aug: int = 8,
+    n_data_aug: int = 4,
     step_wise_random: bool = False,
-    n_steps: int = 5000,
+    n_steps: int = 600000,
     thermostat: Literal["nose_hoover", "langevin", "bussi"] = "nose_hoover",
-    temperature: float = 300,
+    temperature: float = 500,
     tau: float = 100.0,
     init_struct_dir: Path = "data_md",
-    init_struct: str = "c12h4",
+    init_struct: str = "md17_aspirin",
     last_n_steps: int
     | None = None,  # export the last n steps of the trajectory separately and use those for the dipole spectrum
     model_run_dir: Path = MISSING,

@@ -162,7 +162,7 @@ def get_ko2020_dataset(
     seed: int = 42,
 ) -> None:
     if splits is None:
-        splits = {"train": 0.5, "val": 0.3, "test": 0.2}
+        splits = {"train": 0.9, "val": 0.05, "test": 0.05}
 
     assert molecule_name in dataset_filenames, (
         f"Unknown molecule {molecule_name=}, expected one of {dataset_filenames.keys()}"
@@ -190,7 +190,9 @@ def get_ko2020_dataset(
 
     # get split in which this molecule is probably included during training
     split_name = get_split_by_molecule_name(molecule_name)
-    logger.info(f"This molecule was included in {'the '+ split_name if split_name != "unknown" else 'no '} split during training.")
+    logger.info(
+        f"This molecule was included in {'the ' + split_name if split_name != 'unknown' else 'no '} split during training."
+    )
 
     index_array = np.arange(len(dataset))
     train_idx, test_val_idx = train_test_split(index_array, train_size=splits["train"], random_state=seed)

@@ -48,7 +48,7 @@ class ASEAtomsDBDataset(Dataset):
 
         return {
             "Z": Z,
-            "positions": convert_coordinates(positions, from_unit=self.coordinate_unit, to_unit="Bohr"), 
+            "positions": convert_coordinates(positions, from_unit=self.coordinate_unit, to_unit="Bohr"),
             "energy": properties["energy"],
             "forces": convert_force(properties["forces"], from_unit=self.force_unit, to_unit="Hartree/Bohr"),
         }
@@ -78,7 +78,7 @@ def get_qm7x_dataset(
         DatasetSplits object containing the dataset splits and properties
     """
     if splits is None:
-        splits = {"train": 0.5, "val": 0.3, "test": 0.2}
+        splits = {"train": 0.9, "val": 0.05, "test": 0.05}
 
     # Setup directories
     working_path = work_dir if work_dir is not None else data_dir
@@ -110,7 +110,6 @@ def get_qm7x_dataset(
         shutil.copy2(permanent_db_path, db_path)
         shutil.copy2(permanent_db_path.with_suffix(".txt"), db_path.with_suffix(".txt"))
 
-
     # Wait for rank 0 to finish database operations
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
@@ -133,9 +132,7 @@ def get_qm7x_dataset(
             splits[split] = ratio / len(dataset)
 
     # Use seed that was used during training of the model to prevent data leakage
-    train_idx, test_idx, val_idx = non_overlapping_train_test_val_split_hash_based(
-        splits, molecule_names, seed=42
-    )
+    train_idx, test_idx, val_idx = non_overlapping_train_test_val_split_hash_based(splits, molecule_names, seed=42)
 
     datasets = {
         Split.train: Subset(dataset, train_idx),

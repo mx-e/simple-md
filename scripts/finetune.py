@@ -20,6 +20,7 @@ from lib.datasets import (
     get_qm7x_dataset,
     get_qm7x_pbe0_dataset,
     get_rmd17_dataset,
+    get_md17_ccsd_dataset,
 )
 from lib.ema import EMAModel
 from lib.loss import LossModule
@@ -271,7 +272,7 @@ qm7x_pbe0_data = pbuilds(
 qm7x_data = pbuilds(
     get_qm7x_dataset,
     data_dir="/data",
-    work_dir="/temp_data",
+    work_dir=None,
 )
 
 ko2020_ag_cluster = pbuilds(
@@ -297,6 +298,12 @@ ko2020_NaCl = pbuilds(  # noqa: N816
     data_dir="/temp_data",
     molecule_name="NaCl",
 )
+
+ethanol_ccsd = pbuilds(get_md17_ccsd_dataset, data_dir="/data", molecule_name="ethanol")
+apspirin_ccsd = pbuilds(get_md17_ccsd_dataset, data_dir="/data", molecule_name="aspirin")
+toluene_ccsd = pbuilds(get_md17_ccsd_dataset, data_dir="/data", molecule_name="toluene")
+benzene_ccsd = pbuilds(get_md17_ccsd_dataset, data_dir="/data", molecule_name="benzene")
+malonaldehyde_ccsd = pbuilds(get_md17_ccsd_dataset, data_dir="/data", molecule_name="malonaldehyde")
 
 
 dataset_store = store(group="ft.dataset")
@@ -334,6 +341,11 @@ dataset_store(ko2020_ag_cluster, name="ko2020_ag_cluster")
 dataset_store(ko2020_AuMgO, name="ko2020_AuMgO")
 dataset_store(ko2020_Carbon_chain, name="ko2020_Carbon_chain")
 dataset_store(ko2020_NaCl, name="ko2020_NaCl")
+dataset_store(ethanol_ccsd, name="ethanol_ccsd")
+dataset_store(apspirin_ccsd, name="aspirin_ccsd")
+dataset_store(toluene_ccsd, name="toluene_ccsd")
+dataset_store(benzene_ccsd, name="benzene_ccsd")
+dataset_store(malonaldehyde_ccsd, name="malonaldehyde_ccsd")
 
 
 def finetune(
@@ -348,11 +360,11 @@ def finetune(
     train_loop: Partial[callable] = ft_loop,
     finetune_type: Literal["head_only", "full"] = "full",
     train_size: Literal["zero_shot", "few_shot", "full"] = "few_shot",
-    few_shot_size: int = 9500,
+    few_shot_size: int = 1000,
     batch_size: int = 250,
-    total_steps: int = 1000,
+    total_steps: int = 2000,
     final_val_samples: int = 500,
-    final_test_samples: int = 10000,
+    final_test_samples: int = 500,
     lr: float = 5e-5,
     grad_accum_steps: int = 1,
     lr_scheduler: Partial[callable] | None = p_cosine_scheduler,  # None = No schedule
@@ -363,6 +375,8 @@ def finetune(
     setup_dist(rank, world_size, port=port)
     try:
         device = setup_device(rank)
+        assert train_size in ["zero_shot", "few_shot", "full"], f"Invalid train_size setting {train_size}"
+        assert finetune_type in ["head_only", "full"], f"Invalid finetune_type setting {finetune_type}"
 
         # get model + loss
         config_path = pretrain_model_dir / ".hydra" / "config.yaml"
@@ -424,14 +438,16 @@ def finetune(
             for name, param in model.module.named_parameters():
                 if name not in head_params:
                     param.requires_grad = False
+            model.module.encoder.heads["forces"].reset_parameters()
             model = DDP(model.module, **ddp_args)  # rewrap model after modification
         lr_scheduler = (
             lr_scheduler(optim, lr, lr_decay_steps=total_steps) if lr_scheduler is not None else LRScheduler(optim, lr)
         )
 
         # data + loaders
-        splits={"train": few_shot_size, "test": final_test_samples}
+        splits = {"train": few_shot_size, "test": final_test_samples}
         data = dataset(rank, splits=splits)
+        # data = dataset(rank)
         if pipeline_conf is None:
             try:
                 pipeline_conf = instantiate(conf["train"]["pipeline_conf"])
@@ -497,9 +513,17 @@ def finetune(
             if cfg.wandb is not None:
                 results_data = []
                 if val_results is not None:
-                    results_data += [[metric_name, metric, "val"] for metric_name, metric in val_results.items() if isinstance(metric, (int, float))]
+                    results_data += [
+                        [metric_name, metric, "val"]
+                        for metric_name, metric in val_results.items()
+                        if isinstance(metric, (int, float))
+                    ]
                 if test_results is not None:
-                    results_data += [[metric_name, metric, "test"] for metric_name, metric in test_results.items() if isinstance(metric, (int, float))]
+                    results_data += [
+                        [metric_name, metric, "test"]
+                        for metric_name, metric in test_results.items()
+                        if isinstance(metric, (int, float))
+                    ]
                 results_table = wandb.Table(
                     columns=["metric", "value", "split"],
                     data=results_data,
@@ -518,8 +542,10 @@ def finetune(
                     if isinstance(metric, (int, float)):
                         cfg.wandb.run.summary[f"final_test/{metric_name}"] = metric
 
-                if 'molecule_name' in dataset.keywords.keys():
-                    cfg.wandb.run.summary["split_during_training"] = get_split_by_molecule_name(dataset.keywords['molecule_name'])
+                if "molecule_name" in dataset.keywords.keys():
+                    cfg.wandb.run.summary["split_during_training"] = get_split_by_molecule_name(
+                        dataset.keywords["molecule_name"]
+                    )
 
             save_checkpoint(
                 final_model.module.encoder,
