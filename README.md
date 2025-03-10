@@ -111,7 +111,7 @@ You can also add config groups and all other hydra-zen functionality.
 
 #### **However, you should not remove or rename the first argument as it is needed to configure sweeps, wandb, etc.** 
 
-(You can if you know the code well, but be warned! Be careful making changes to this - in a very unlucky case changing BaseConfigs structure can lead to recursive runs on your infratructure!)
+(You can if you know the code well, but be warned! Be careful making changes to this - in a very unlucky case changing BaseConfigs structure can lead to recursive runs on your infrastructure!)
 
 
 ```python
