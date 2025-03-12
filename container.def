@@ -1,24 +1,48 @@
 Bootstrap: docker
-From: mx8e/cluster_python:3.12
-
-%setup
-    mkdir -p ${APPTAINER_ROOTFS}/opt/slurm-23.2
-    mkdir -p ${APPTAINER_ROOTFS}/opt/slurm
-    mkdir -p ${APPTAINER_ROOTFS}/etc/slurm
-    mkdir -p ${APPTAINER_ROOTFS}/etc/munge
-    mkdir -p ${APPTAINER_ROOTFS}/var/log/munge
-    mkdir -p ${APPTAINER_ROOTFS}/run/munge
-    mkdir -p ${APPTAINER_ROOTFS}/temp_data
-    mkdir -p ${APPTAINER_ROOTFS}/data
+From: python:3.12-slim
 
 %files
     pyproject.toml /pyproject.toml
-    poetry.lock /poetry.lock
+    uv.lock /uv.lock
     README.md /README.md
 
 %environment
     export DEBIAN_FRONTEND=noninteractive
     export PYTHONPATH=./src:$PYTHONPATH
+    export UV_LINK_MODE=copy
+    export UV_PROJECT_ENVIRONMENT="$(dirname "$APPTAINER_CONTAINER")/.venv"
 
 %post
-    poetry config virtualenvs.create false && poetry install --no-interaction --no-root
+    # Ensure the /tmp directory has the correct permissions
+    chmod 1777 /tmp
+
+    # Update package list and install openssh-client
+    apt update && apt install openssh-client -y
+
+    # Install Python package 'uv'
+    pip install --root-user-action=ignore --no-cache-dir uv
+    uv sync --frozen --no-dev --no-install-project
+
+    # install aliases for the slurm commands
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} sacct $1' >> /usr/local/bin/sacct
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} sacctmgr $1' >> /usr/local/bin/sacctmgr
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} salloc $1' >> /usr/local/bin/salloc
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} sattach $1' >> /usr/local/bin/sattach
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} sbatch $1' >> /usr/local/bin/sbatch
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} sbcast $1' >> /usr/local/bin/sbcast
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} scancel $1' >> /usr/local/bin/scancel
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} scontrol $1' >> /usr/local/bin/scontrol
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} sdiag $1' >> /usr/local/bin/sdiag
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} sgather $1' >> /usr/local/bin/sgather
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} sinfo $1' >> /usr/local/bin/sinfo
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} smap $1' >> /usr/local/bin/smap
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} sprio $1' >> /usr/local/bin/sprio
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} squeue $1' >> /usr/local/bin/squeue
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} sreport $1' >> /usr/local/bin/sreport
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} srun $1' >> /usr/local/bin/srun
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} sshare $1' >> /usr/local/bin/sshare
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} sstat $1' >> /usr/local/bin/sstat
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} strigger $1' >> /usr/local/bin/strigger
+    echo '#!/bin/bash \n ssh $USER@${COMMAND_EXECUTION_NODE:-$HOSTNAME} sview $1' >> /usr/local/bin/sview
+    cd /usr/local/bin
+    chmod 755 sacct salloc sbatch scancel sdiag sinfo sprio sreport sshare strigger sacctmgr sattach sbcast scontrol sgather smap squeue srun sstat sview
