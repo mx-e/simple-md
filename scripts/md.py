@@ -72,14 +72,14 @@ def get_thermostat(
 def main(
     cfg: BaseConfig,
     timestep: float = 0.5,
-    n_data_aug: int = 4,
+    n_data_aug: int = 1,
     step_wise_random: bool = False,
-    n_steps: int = 600000,
-    thermostat: Literal["nose_hoover", "langevin", "bussi"] = "nose_hoover",
-    temperature: float = 500,
+    n_steps: int = 200000000,
+    thermostat: Literal["nose_hoover", "langevin", "bussi"] = "langevin",
+    temperature: float = 300,
     tau: float = 100.0,
     init_struct_dir: Path = "data_md",
-    init_struct: str = "md17_aspirin",
+    init_struct: str = "md17_ethanol",
     last_n_steps: int
     | None = None,  # export the last n steps of the trajectory separately and use those for the dipole spectrum
     model_run_dir: Path = MISSING,
@@ -220,7 +220,7 @@ def run_md_simulation(
     atoms.calc = calculator
 
     # Initialize velocities
-    MaxwellBoltzmannDistribution(atoms, temperature_K=temperature)
+    MaxwellBoltzmannDistribution(atoms, temperature_K=temperature * 2)
 
     dyn = get_thermostat(thermostat, atoms, temperature, timestep, tau)
 
