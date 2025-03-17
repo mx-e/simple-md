@@ -1,4 +1,4 @@
-#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data --bind /home/bbdc2/quantum/max/:/data container.sif python
+#! /usr/bin/env -S apptainer exec --nv --bind /temp:/temp_data --bind /home/bbdc2/quantum/max/:/data container.sif uv run python
 from functools import partial
 import json
 import time
@@ -70,6 +70,7 @@ benchmark_ds_store(md17_ethanol, name="md17_ethanol")
 benchmark_ds_store(md17_naphthalene, name="md17_naphthalene")
 benchmark_ds_store(md17_salicylic_acid, name="md17_salicylic_acid")
 
+
 def measure_flops(model: th.nn.Module, sample_batch: dict, amp) -> float:
     import torch.profiler
 
@@ -81,7 +82,7 @@ def measure_flops(model: th.nn.Module, sample_batch: dict, amp) -> float:
         with torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
             record_shapes=True,
-            with_flops=True
+            with_flops=True,
         ) as prof:
             model(sample_batch)
 
@@ -91,6 +92,7 @@ def measure_flops(model: th.nn.Module, sample_batch: dict, amp) -> float:
             total_flops += evt.flops
 
     return total_flops
+
 
 def benchmark(
     cfg: BaseConfig,
@@ -130,7 +132,7 @@ def benchmark(
     else:
         logger.info("Using PyTorch Eager (no torch.compile).")
 
-    data_splits = {"train": 2, "test": batch_size*(measure_steps+warmup_steps+1)}
+    data_splits = {"train": 2, "test": batch_size * (measure_steps + warmup_steps + 1)}
     dataset_splits = dataset(splits=data_splits, rank=0)
     if pipeline_conf is None:
         try:
@@ -152,8 +154,10 @@ def benchmark(
     )
     test_loader = loaders[Split.test]
     num_test_samples = len(test_loader.dataset)
-    logger.info(f"Loaded {num_test_samples} test samples "
-                f"for dataset={dataset.keywords.get('molecule_name','') or dataset.keywords.get('dataset_name')}")
+    logger.info(
+        f"Loaded {num_test_samples} test samples "
+        f"for dataset={dataset.keywords.get('molecule_name', '') or dataset.keywords.get('dataset_name')}"
+    )
 
     amp = get_amp(dtype)
     if compute_flops:
@@ -181,7 +185,9 @@ def benchmark(
                         th.cuda.synchronize()
                     inference = time.perf_counter()
                 outputs[Props.forces] = remove_net_force(forces=outputs[Props.forces], n_nodes=n_nodes)
-                outputs[Props.forces] = remove_net_torque(positions=batch[Props.positions], forces=outputs[Props.forces], n_nodes=n_nodes)
+                outputs[Props.forces] = remove_net_torque(
+                    positions=batch[Props.positions], forces=outputs[Props.forces], n_nodes=n_nodes
+                )
 
                 if i >= warmup_steps:
                     if th.cuda.is_available():
@@ -193,22 +199,21 @@ def benchmark(
 
                 if seen >= measure_steps:
                     break
-        
+
         total_times = np.array(total_times)
         inference_times = np.array(inference_times)
-        avg_total_time = np.mean(total_times) if len(total_times)>0 else 0.0
-        avg_inference_time = np.mean(inference_times) if len(inference_times)>0 else 0.0
-        avg_postproc_time = np.mean(total_times - inference_times) if len(total_times)>0 else 0.0
-        avg_percent_postproc = np.mean((total_times - inference_times) / total_times) if len(total_times)>0 else 0.0
+        avg_total_time = np.mean(total_times) if len(total_times) > 0 else 0.0
+        avg_inference_time = np.mean(inference_times) if len(inference_times) > 0 else 0.0
+        avg_postproc_time = np.mean(total_times - inference_times) if len(total_times) > 0 else 0.0
+        avg_percent_postproc = np.mean((total_times - inference_times) / total_times) if len(total_times) > 0 else 0.0
         logger.info(f"Measured {seen} batches in {avg_total_time:.2f} sec")
         logger.info(f"Avg Inference Time: {avg_inference_time * 1000:.2f} ms")
         logger.info(f"Avg Post-processing Time: {avg_postproc_time * 1000:.2f} ms")
         logger.info(f"Avg Post-processing Time (%): {avg_percent_postproc * 100:.2f}%")
-        throughput = (seen / total_times.sum()) if len(total_times)>0 else 0.0
-        logger.info(f"Throughput: {throughput:.2f} batches/sec, "
-                    f"Avg Latency (batch): {avg_total_time * 1000:.2f} ms")
-        
-                    # save metrics and data to json file
+        throughput = (seen / total_times.sum()) if len(total_times) > 0 else 0.0
+        logger.info(f"Throughput: {throughput:.2f} batches/sec, Avg Latency (batch): {avg_total_time * 1000:.2f} ms")
+
+        # save metrics and data to json file
         metrics = {
             "throughput": throughput,
             "avg_latency": avg_total_time,
@@ -222,23 +227,24 @@ def benchmark(
         with open(cfg.runtime.out_dir / "metrics.json", "w") as f:
             json.dump(metrics, f)
 
-    if cfg.wandb and len(total_times)>0:
-            wandb.run.summary["throughput"] = throughput
-            wandb.run.summary["avg_latency"] = avg_total_time
-            wandb.run.summary["avg_inference_time"] = avg_inference_time
-            wandb.run.summary["avg_postproc_time"] = avg_postproc_time
-            wandb.run.summary["avg_postproc_percent"] = avg_percent_postproc
-            if compute_flops:
-                wandb.run.summary["flops"] = flops
-
+    if cfg.wandb and len(total_times) > 0:
+        wandb.run.summary["throughput"] = throughput
+        wandb.run.summary["avg_latency"] = avg_total_time
+        wandb.run.summary["avg_inference_time"] = avg_inference_time
+        wandb.run.summary["avg_postproc_time"] = avg_postproc_time
+        wandb.run.summary["avg_postproc_percent"] = avg_percent_postproc
+        if compute_flops:
+            wandb.run.summary["flops"] = flops
 
     wandb.finish()
+
 
 p_bench = builds(
     benchmark,
     populate_full_signature=True,
     zen_partial=True,
 )
+
 
 @configure_main(extra_defaults=[{"bench.dataset": "md17_aspirin"}])
 def main(
@@ -254,6 +260,7 @@ def main(
         cfg=cfg,
         pretrain_model_dir=Path(pretrain_model_dir),
     )
+
 
 if __name__ == "__main__":
     benchmark_ds_store.add_to_hydra_store()
